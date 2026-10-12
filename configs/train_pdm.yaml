@@ -1,0 +1,21 @@
+# Train an ensemble of E/I networks on NeuroGym's perceptual decision-making task
+# (random-dots style evidence integration with noisy evidence).
+name: pdm_ei
+seeds: [0, 1, 2, 3, 4, 5, 6, 7]
+task:
+  name: PerceptualDecisionMaking-v0
+  dt: 20                      # ms per step
+  timing: {fixation: 200, stimulus: 1000, delay: 0, decision: 200}   # ms
+model:
+  n_units: 100
+  frac_exc: 0.8               # 80 excitatory / 20 inhibitory
+  tau: 100                    # ms
+  noise_std: 0.05
+  dale: true
+steps: 1500
+batch_size: 32
+seq_len: 100
+lr: 0.001
+rate_l2: 0.001
+weight_l2: 0.0001
+out_dir: runs
