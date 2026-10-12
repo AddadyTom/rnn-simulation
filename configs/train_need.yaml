@@ -1,0 +1,21 @@
+# Train an ensemble of E/I networks on the need-gated cue task (Livneh-style):
+# lick after a cue only if it predicts what the current need state calls for.
+name: need_ei
+seeds: [0, 1, 2, 3, 4, 5, 6, 7]
+task:
+  name: NeedGatedCue-v0
+  dt: 20                      # ms per step
+  timing: {fixation: 300, stimulus: 500, delay: 500, decision: 300}   # ms
+model:
+  n_units: 100
+  frac_exc: 0.8               # 80 excitatory / 20 inhibitory
+  tau: 100                    # ms
+  noise_std: 0.05
+  dale: true
+steps: 2000
+batch_size: 32
+seq_len: 160
+lr: 0.001
+rate_l2: 0.001
+weight_l2: 0.0001
+out_dir: runs

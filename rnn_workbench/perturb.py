@@ -7,7 +7,9 @@ A perturbation is described declaratively (usually from a YAML config):
         fraction:   0.3                 fraction of that pool (or)
         count:      20                  number of units (or)
         units:      [3, 17, 42]         explicit unit indices
-        select:     "random" | "top_choice"   how to pick within the pool
+        select:     "random" | "top_selective"   how to pick within the pool
+                    (top_selective: units whose stimulus-period rate best separates
+                    trials by correct response; "top_choice" is an alias)
     kind:    "silence"  clamp rates to 0 in the window (acute, like optogenetic inhibition)
              "lesion"   clamp rates to 0 for the whole trial (permanent ablation)
              "current"  add `strength` to the units' input in the window (+ excite, - inhibit)
@@ -57,11 +59,13 @@ def _n_targets(target: dict, pool_size: int) -> int:
 
 
 def choice_selectivity(rates: torch.Tensor, batch: TrialBatch) -> np.ndarray:
-    """|mean rate on choice-2 trials - mean rate on choice-1 trials| during the stimulus."""
+    """Spread of each unit's mean stimulus-period rate across correct-response groups
+    (choice 1 vs 2, or lick vs no lick)."""
     s, e = batch.periods["stimulus"]
-    gt = np.array([c["ground_truth"] for c in batch.conditions])
+    target = np.array([c["target_action"] for c in batch.conditions])
     r = rates[s:e].mean(0).cpu().numpy()  # (B, N)
-    return np.abs(r[gt == 1].mean(0) - r[gt == 0].mean(0))
+    means = np.stack([r[target == a].mean(0) for a in np.unique(target)])
+    return means.max(0) - means.min(0)
 
 
 def resolve_targets(
@@ -74,9 +78,9 @@ def resolve_targets(
     select = target.get("select", "random")
     if select == "random":
         return np.sort(rng.choice(pool, size=n, replace=False))
-    if select == "top_choice":
+    if select in ("top_selective", "top_choice"):
         if selectivity is None:
-            raise ValueError("select='top_choice' needs choice selectivity")
+            raise ValueError(f"select={select!r} needs response selectivity")
         return np.sort(pool[np.argsort(selectivity[pool])[::-1][:n]])
     raise ValueError(f"unknown select {select!r}")
 
