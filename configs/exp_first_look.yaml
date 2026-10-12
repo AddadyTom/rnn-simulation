@@ -1,0 +1,32 @@
+# First perturbation experiment on the trained ensemble.
+# Each perturbation is compared with a size-matched random control from the same population.
+name: first_look
+model_dir: runs/pdm_ei
+trials_per_condition: 40
+out_dir: experiments
+perturbations:
+  - name: silence_I_30pct
+    kind: silence
+    target: {population: I, fraction: 0.3}
+    window: stimulus
+  - name: silence_E_30pct
+    kind: silence
+    target: {population: E, fraction: 0.3}
+    window: stimulus
+  - name: silence_top_choice_E
+    kind: silence
+    target: {population: E, count: 15, select: top_choice}
+    window: stimulus
+  - name: silence_E_early
+    kind: silence
+    target: {population: E, count: 15, select: top_choice}
+    window: [200, 700]        # first half of the stimulus
+  - name: silence_E_late
+    kind: silence
+    target: {population: E, count: 15, select: top_choice}
+    window: [700, 1200]       # second half of the stimulus
+  - name: excite_I
+    kind: current
+    target: {population: I, fraction: 0.5}
+    window: stimulus
+    strength: 1.0

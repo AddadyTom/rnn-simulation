@@ -1,0 +1,16 @@
+[project]
+name = "rnn-workbench"
+version = "0.1.0"
+description = "In-silico neuroscience workbench: train E/I rate RNNs on cognitive tasks and run virtual lesion and optogenetics experiments"
+requires-python = ">=3.10"
+dependencies = ["torch", "numpy", "matplotlib", "pyyaml", "neurogym"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["rnn_workbench"]
+
+[tool.pytest.ini_options]
+markers = ["slow: trains a network to criterion (about a minute)"]
+filterwarnings = ["ignore::UserWarning", "ignore::DeprecationWarning"]
