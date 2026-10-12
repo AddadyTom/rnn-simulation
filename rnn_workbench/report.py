@@ -120,26 +120,67 @@ def fig_rates(res: dict) -> str:
     return _png(fig)
 
 
+STATE_COLORS = {"hungry": ORANGE, "thirsty": BLUE, "sated": GRAY}
+CUE_STYLES = {"food": "-", "water": "--", "neutral": ":"}
+
+
 def fig_pca(res: dict) -> str:
     """Condition-averaged trajectories on the intact network's top 2 PCs."""
     pca = res["example"]["pca"]
-    keys = pca["keys"]
+    keys = [tuple(k) for k in pca["keys"]]
     names = list(pca["proj"].keys())
-    cohs = sorted({k[1] for k in keys})
+    need_task = isinstance(keys[0][0], str)
+    if not need_task:
+        cohs = sorted({k[1] for k in keys})
     fig, axs = _grid(len(names), 4, 2.8, 2.8, sharex=True, sharey=True)
     for ax, name in zip(axs, names):
         proj = np.array(pca["proj"][name])  # (K, T, 2)
-        for k, (gt, coh) in enumerate(keys):
-            col = SEQ_BLUES[min(cohs.index(coh) + 1, len(SEQ_BLUES) - 1)] if gt == 1 else \
-                ["#fbd3c2", "#f6ab8b", "#f08a60", ORANGE, "#b84a1f", "#7d3013"][min(cohs.index(coh) + 1, 5)]
-            ax.plot(proj[k, :, 0], proj[k, :, 1], color=col, linewidth=1.5)
+        for k, key in enumerate(keys):
+            if need_task:
+                col, ls = STATE_COLORS.get(key[0], INK2), CUE_STYLES.get(key[1], "-")
+            else:
+                gt, coh = key
+                ramp = SEQ_BLUES if gt == 1 else ["#fbd3c2", "#f6ab8b", "#f08a60", ORANGE, "#b84a1f", "#7d3013"]
+                col, ls = ramp[min(cohs.index(coh) + 1, len(ramp) - 1)], "-"
+            ax.plot(proj[k, :, 0], proj[k, :, 1], color=col, linestyle=ls, linewidth=1.5)
             ax.scatter(proj[k, -1, 0], proj[k, -1, 1], color=col, s=16, zorder=3)
         ax.set_title(name, loc="left", color=INK)
         ax.set_xlabel(f"PC1 ({100 * pca['var_explained'][0]:.0f}% var.)")
     fig.tight_layout()
     axs[0].set_ylabel(f"PC2 ({100 * pca['var_explained'][1]:.0f}% var.)")
-    fig.text(0.01, -0.04, "Blue = right-choice trials, orange = left; darker = stronger evidence. Dots mark trial end.",
-             fontsize=8, color=INK2)
+    note = ("Color = need state (orange hungry, blue thirsty, gray sated); line = cue (solid food, dashed water, "
+            "dotted neutral). Dots mark trial end." if need_task else
+            "Blue = right-choice trials, orange = left; darker = stronger evidence. Dots mark trial end.")
+    fig.text(0.01, -0.04, note, fontsize=8, color=INK2)
+    return _png(fig)
+
+
+def fig_lick(res: dict) -> str:
+    """Lick probability per need state x cue: intact, then change caused by each perturbation."""
+    seeds = list(res["seeds"].values())
+    lick0 = seeds[0]["intact"]["lick"]
+    states, cues = lick0["states"], lick0["cues"]
+    intact = np.mean([s["intact"]["lick"]["p_lick"] for s in seeds], 0)
+    names = [p["name"] for p in res["perturbations"]]
+    fig, axs = _grid(len(names) + 1, 4, 2.6, 2.4)
+    diverging = matplotlib.colors.LinearSegmentedColormap.from_list("div", [ORANGE, "#f1f0ed", BLUE])
+    def draw(ax, mat, cmap, vmin, vmax, title, fmt, light):
+        # light: value the colormap draws pale; text turns white only on strong colors.
+        ax.imshow(mat, cmap=cmap, vmin=vmin, vmax=vmax)
+        for i in range(mat.shape[0]):
+            for j in range(mat.shape[1]):
+                ax.text(j, i, fmt(mat[i, j]), ha="center", va="center", fontsize=8,
+                        color="white" if abs(mat[i, j] - light) > 0.6 * (vmax - light if mat[i, j] > light else light - vmin) else INK)
+        ax.set_xticks(range(len(cues)), cues, fontsize=8)
+        ax.set_yticks(range(len(states)), states, fontsize=8)
+        ax.grid(False)
+        ax.set_title(title, loc="left", color=INK, fontsize=9)
+    seq = matplotlib.colors.LinearSegmentedColormap.from_list("seq", ["#f1f0ed", BLUE])
+    draw(axs[0], intact, seq, 0, 1, "Intact: P(lick)", lambda v: f"{v:.2f}", light=0)
+    for ax, name in zip(axs[1:], names):
+        pert = np.mean([s["perturbations"][name]["perturbed"]["lick"]["p_lick"] for s in seeds], 0)
+        draw(ax, pert - intact, diverging, -1, 1, f"{name}: change", lambda v: f"{v:+.2f}", light=0)
+    fig.tight_layout()
     return _png(fig)
 
 
@@ -192,10 +233,18 @@ def build_report(exp_dir: Path) -> Path:
     base_acc = [s["intact"]["accuracy"] for s in seeds.values()]
     m = res["model"]
     n_exc = round(m["frac_exc"] * m["n_units"]) if m["dale"] else m["n_units"]
+    intact0 = next(iter(seeds.values()))["intact"]
+    behavior_fig = []
+    if "psychometric" in intact0:
+        behavior_fig = [("Psychometric curves", fig_psychometric(res), "Mean across networks.")]
+    elif "lick" in intact0:
+        behavior_fig = [("Lick behavior by need state and cue", fig_lick(res),
+                         "Mean across networks. First panel: intact lick probability. Other panels: perturbed minus "
+                         "intact (blue = more licking, orange = less).")]
     figs = [
         ("Effect size vs. random control", fig_effects(res),
          "Accuracy drop from intact for each network. Lines pair a network's targeted and control results."),
-        ("Psychometric curves", fig_psychometric(res), "Mean across networks."),
+        *behavior_fig,
         ("Population activity", fig_rates(res), f"Network seed {res['example']['seed']}. Solid: mean excitatory rate; dashed: mean inhibitory rate. Shaded: stimulus, then decision period."),
         ("State-space trajectories", fig_pca(res), "Projected on the intact network's top two principal components."),
     ]
@@ -211,7 +260,7 @@ def build_report(exp_dir: Path) -> Path:
 ({n_exc} E / {m['n_units'] - n_exc} I, Dale's law {'on' if m['dale'] else 'off'}) ·
 intact accuracy {100 * np.mean(base_acc):.1f}% (range {100 * min(base_acc):.1f}–{100 * max(base_acc):.1f}%)</p>
 <h2>Summary</h2><div class="tablewrap">{_summary_table(res)}</div>
-<p class="sub">Accuracy includes 0% coherence trials, where chance is 50%. Control = the same number of randomly chosen
+<p class="sub">{"Accuracy includes 0% coherence trials, where chance is 50%. " if "psychometric" in intact0 else ""}Control = the same number of randomly chosen
 units (from the target's own population for selected targets, from the whole network for population targets),
 same window and kind, averaged over 10 random draws; random targets are also averaged over 10 draws. p-value from an exact sign-flip test on the
 per-network targeted − control differences.</p>

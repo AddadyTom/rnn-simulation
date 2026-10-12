@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from .perturb import Perturbation, build_masks, choice_selectivity, control_targets, resolve_targets
-from .tasks import TaskConfig, behavior_summary, choices_from_outputs, eval_trials
+from .tasks import TaskConfig, behavior_summary, choices_from_outputs, condition_key, eval_trials
 from .train import load_model
 
 
@@ -56,18 +56,20 @@ def average_behavior(runs: list[dict]) -> dict:
         out["accuracy_by_coh"] = {
             k: float(np.mean([r["accuracy_by_coh"][k] for r in runs])) for k in runs[0]["accuracy_by_coh"]
         }
+    if "lick" in runs[0]:
+        out["lick"] = {**runs[0]["lick"], "p_lick": np.mean([r["lick"]["p_lick"] for r in runs], 0).tolist()}
     return out
 
 
 def pca_trajectories(rates_by_cond: dict, batch, n_comp: int = 2) -> dict:
-    """Project condition-averaged trajectories (by choice side and coherence) on the
-    intact network's top PCs, so all conditions share axes."""
-    keys = sorted({(c["ground_truth"], c.get("coh")) for c in batch.conditions})
+    """Project condition-averaged trajectories on the intact network's top PCs, so all
+    conditions share axes."""
+    keys = list(dict.fromkeys(condition_key(c) for c in batch.conditions))
     def averages(rates):
         r = rates.cpu().numpy()
         avg = []
-        for gt, coh in keys:
-            m = np.array([(c["ground_truth"], c.get("coh")) == (gt, coh) for c in batch.conditions])
+        for key in keys:
+            m = np.array([condition_key(c) == key for c in batch.conditions])
             avg.append(r[:, m].mean(1))
         return np.stack(avg)  # (K, T, N)
     intact = averages(rates_by_cond["intact"])

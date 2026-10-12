@@ -1,0 +1,36 @@
+# First perturbation experiment on the need-gated cue ensemble.
+# Questions modeled on Livneh-lab manipulations of insular cortex:
+#  - does the network need its inhibition to gate cue responses by need state?
+#  - is the cue / need information held in the most selective E units?
+#  - does it matter when we intervene: while the cue is on, or while it is held
+#    across the delay (prediction) before the response?
+name: need_first_look
+model_dir: runs/need_ei
+trials_per_condition: 40
+out_dir: experiments
+perturbations:
+  - name: silence_I_cue
+    kind: silence
+    target: {population: I, fraction: 0.3}
+    window: stimulus
+  - name: silence_I_delay
+    kind: silence
+    target: {population: I, fraction: 0.3}
+    window: delay
+  - name: silence_E_cue
+    kind: silence
+    target: {population: E, fraction: 0.3}
+    window: stimulus
+  - name: silence_top_selective_E_cue
+    kind: silence
+    target: {population: E, count: 15, select: top_selective}
+    window: stimulus
+  - name: silence_top_selective_E_delay
+    kind: silence
+    target: {population: E, count: 15, select: top_selective}
+    window: delay
+  - name: excite_I_cue
+    kind: current
+    target: {population: I, fraction: 0.5}
+    window: stimulus
+    strength: 1.0
