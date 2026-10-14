@@ -1,0 +1,23 @@
+# Data-constrained training on the need-gated cue task. With no lab recordings yet,
+# the "recordings" come from a trained network (the teacher): 60 of its 100 neurons,
+# condition-averaged. A fresh network is fit to reproduce them; the readout is trained
+# afterwards on the frozen network. Point `recordings` at an .npz to fit real data.
+name: need_fit
+teacher: runs/need_ei/seed_0
+n_recorded: 60
+task:
+  name: NeedGatedCue-v0
+  dt: 20
+  timing: {fixation: 300, stimulus: 500, delay: 500, decision: 300}
+model:
+  n_units: 100
+  frac_exc: 0.8
+  tau: 100
+  noise_std: 0.05
+  dale: true
+task_weight: 0.0
+steps: 1500
+trials_per_condition: 8
+lr: 0.001
+seed: 0
+out_dir: runs

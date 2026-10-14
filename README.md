@@ -42,6 +42,17 @@ tasks to `LOCAL_ENVS` in `envs.py`.
 | `perturb.py` | Declarative perturbations: targets (E, I, all; fraction, count, explicit units, most selective), kinds (`silence`, `lesion`, `current`), time windows |
 | `experiment.py` | Runs intact, targeted and matched-control conditions on every network; ensemble statistics with an exact sign-flip test |
 | `report.py` | One self-contained HTML report per experiment |
+| `fit.py` | Data-constrained training: fit a network to recorded PSTHs (each neuron paired with a model unit of its type), optionally with the task loss too |
+
+## Fitting recorded activity
+
+`python -m rnn_workbench fit configs/fit_need.yaml` trains a network to reproduce
+condition-averaged activity instead of (or with `task_weight > 0`, as well as) the task.
+Recordings are an `.npz` with `psth` (conditions x time steps x neurons, in the
+`eval_trials` condition order) and `is_exc` (neuron type). Without lab data the config
+records 60 of the 100 neurons of a trained network, which gives a known ground truth:
+`scripts/fit_perturbation_check.py` then asks whether the fitted network predicts that
+network's response to silencing.
 
 ## Writing an experiment
 

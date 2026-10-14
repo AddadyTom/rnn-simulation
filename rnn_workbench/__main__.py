@@ -3,6 +3,7 @@
     python -m rnn_workbench train configs/train_pdm.yaml
     python -m rnn_workbench experiment configs/exp_silence.yaml
     python -m rnn_workbench report experiments/<name>
+    python -m rnn_workbench fit configs/fit_need.yaml
 """
 
 import argparse
@@ -16,7 +17,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="rnn_workbench")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name, help_ in (("train", "train an ensemble from a YAML config"),
-                        ("experiment", "run perturbations from a YAML config and write a report")):
+                        ("experiment", "run perturbations from a YAML config and write a report"),
+                        ("fit", "fit a network to recorded activity (data-constrained training)")):
         p = sub.add_parser(name, help=help_)
         p.add_argument("config", type=Path)
     p = sub.add_parser("report", help="rebuild the HTML report for an experiment directory")
@@ -32,6 +34,9 @@ def main(argv=None):
         from .report import build_report
         exp_dir = run_experiment(yaml.safe_load(args.config.read_text()))
         print(f"Report: {build_report(exp_dir)}")
+    elif args.cmd == "fit":
+        from .fit import fit, load_fit_config
+        print(f"Saved fitted network to {fit(load_fit_config(yaml.safe_load(args.config.read_text())))}")
     elif args.cmd == "report":
         from .report import build_report
         print(f"Report: {build_report(args.exp_dir)}")
