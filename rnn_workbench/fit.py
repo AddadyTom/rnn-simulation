@@ -16,6 +16,11 @@ fit a fresh network to part of the teacher's neurons, then ask whether it
 predicts the teacher's response to perturbations it never saw.
 
     python -m rnn_workbench fit configs/fit_need.yaml
+
+Setting `model.rank` fits a low-rank network, and a `ranks:` list in the config fits
+one network per rank and reports held-out variance explained against rank (the
+"how many latent dimensions does this circuit need" curve of Valente, Pillow &
+Ostojic 2022). `calcium.py` turns two-photon recordings into the `psth` input.
 """
 
 from __future__ import annotations
@@ -193,3 +198,27 @@ def fit(cfg: FitConfig, log=print) -> Path:
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
     log(f"  R2 {metrics['fit']['r2']:.3f}  accuracy {metrics['behavior']['accuracy']:.3f}")
     return out_dir
+
+
+def fit_rank_sweep(d: dict, log=print) -> Path:
+    """Fit one network per entry of d["ranks"] (null = full rank) to the same recordings.
+
+    Every fit uses the same seed, so with a teacher it records the same neurons.
+    Writes <out_dir>/<name>/rank_sweep.json with R2 and behavior for each rank.
+    """
+    d = dict(d)
+    ranks = d.pop("ranks")
+    name = d.get("name", FitConfig.name)
+    root = Path(d.get("out_dir", FitConfig.out_dir)) / name
+    rows = []
+    for r in ranks:
+        label = "full" if r is None else f"rank_{int(r)}"
+        log(f"Fitting {label}")
+        cfg = load_fit_config({**d, "name": f"{name}/{label}", "model": {**d.get("model", {}), "rank": r}})
+        m = json.loads((fit(cfg, log=log) / "metrics.json").read_text())
+        rows.append({"rank": r, **m["fit"], "accuracy": m["behavior"]["accuracy"]})
+    (root / "rank_sweep.json").write_text(json.dumps(rows, indent=2))
+    for row in rows:
+        log(f"  rank {row['rank'] or 'full':>4}  R2 {row['r2']:.3f}  median neuron R2 "
+            f"{row['median_neuron_r2']:.3f}  accuracy {row['accuracy']:.3f}")
+    return root

@@ -1,0 +1,25 @@
+# Low-rank fits (Valente, Pillow & Ostojic 2022) on the need-gated cue task: one network
+# per rank, all fit to the same 60 recorded neurons of a trained teacher, then held-out
+# variance explained against rank. With Dale's law, rank r means r patterns per
+# population (connectivity rank <= 2r). Point `recordings` at an .npz to fit real data
+# (see rnn_workbench/calcium.py for two-photon traces).
+name: need_fit_ranks
+teacher: runs/need_ei/seed_0
+n_recorded: 60
+ranks: [1, 2, 3, 5, null]      # null = full rank
+task:
+  name: NeedGatedCue-v0
+  dt: 20
+  timing: {fixation: 300, stimulus: 500, delay: 500, decision: 300}
+model:
+  n_units: 100
+  frac_exc: 0.8
+  tau: 100
+  noise_std: 0.05
+  dale: true
+task_weight: 0.0
+steps: 1500
+trials_per_condition: 8
+lr: 0.001
+seed: 0
+out_dir: runs

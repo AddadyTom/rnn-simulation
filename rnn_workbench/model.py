@@ -11,6 +11,15 @@ or inhibitory (all outgoing weights <= 0). This is enforced by construction:
 W_rec = relu(W_raw) * sign, where sign[:, j] = +1 for E units j and -1 for I units j.
 Following Song, Yang & Wang (2016), inputs are non-negative and only E units project
 to the readout.
+
+Low-rank connectivity (rank = r), after Valente, Pillow & Ostojic (2022):
+    without Dale's law:  W_rec = m @ n.T                       (rank <= r)
+    with Dale's law:     W_rec[:, E] =  relu(m_E) @ relu(n_E).T
+                         W_rec[:, I] = -relu(m_I) @ relu(n_I).T   (rank <= 2r)
+Each population gets its own r non-negative "output" patterns m, so a unit can be
+driven by the E latents and suppressed by the I latents with different weights, and
+Dale's law still holds by construction. Low-rank networks keep their self-couplings
+(masking the diagonal would break the rank).
 """
 
 from __future__ import annotations
@@ -31,6 +40,7 @@ class ModelConfig:
     tau: float = 100.0  # ms
     noise_std: float = 0.05  # recurrent noise, in units of x, per sqrt(step)
     dale: bool = True
+    rank: int | None = None  # None = full rank; r = low-rank connectivity (see module docstring)
 
 
 class EIRNN(nn.Module):
@@ -59,7 +69,21 @@ class EIRNN(nn.Module):
             w *= 0.5
         else:
             w = torch.randn(n, n) * (1.5 / n**0.5)
-        self.w_raw = nn.Parameter(w)
+        if cfg.rank is None:
+            self.w_raw = nn.Parameter(w)
+        else:
+            r = int(cfg.rank)
+            if cfg.dale:
+                # Same mean entry size as the full-rank balanced init above.
+                n_inh = n - self.n_exc
+                inh_gain = self.n_exc / n_inh if n_inh > 0 else 1.0
+                self.m_raw = nn.Parameter(torch.rand(2, n, r))
+                scale = torch.ones(n, 1)
+                scale[self.n_exc :] = inh_gain
+                self.n_raw = nn.Parameter(torch.rand(n, r) * scale * (0.5 / (r * n**0.5)))
+            else:
+                self.m_raw = nn.Parameter(torch.randn(n, r))
+                self.n_raw = nn.Parameter(torch.randn(n, r) / n)
         self.w_in_raw = nn.Parameter(torch.rand(n, cfg.n_inputs) * 0.5)
         self.b = nn.Parameter(torch.zeros(n))
         n_read = self.n_exc
@@ -69,6 +93,11 @@ class EIRNN(nn.Module):
     # Effective (constrained) weights -----------------------------------------
     @property
     def w_rec(self) -> torch.Tensor:
+        if self.cfg.rank is not None:
+            if not self.cfg.dale:
+                return self.m_raw @ self.n_raw.T
+            m, nv, e = torch.relu(self.m_raw), torch.relu(self.n_raw), self.n_exc
+            return torch.cat([m[0] @ nv[:e].T, -(m[1] @ nv[e:].T)], dim=1)
         if self.cfg.dale:
             return torch.relu(self.w_raw) * self.sign * self.no_self
         return self.w_raw * self.no_self
