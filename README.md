@@ -42,7 +42,8 @@ tasks to `LOCAL_ENVS` in `envs.py`.
 | `perturb.py` | Declarative perturbations: targets (E, I, all; fraction, count, explicit units, most selective), kinds (`silence`, `lesion`, `current`), time windows |
 | `experiment.py` | Runs intact, targeted and matched-control conditions on every network; ensemble statistics with an exact sign-flip test |
 | `report.py` | One self-contained HTML report per experiment |
-| `fit.py` | Data-constrained training: fit a network to recorded PSTHs (each neuron paired with a model unit of its type), optionally with the task loss too |
+| `fit.py` | Data-constrained training: fit a network to recorded PSTHs (each neuron paired with a model unit of its type), optionally with the task loss too; rank sweeps for low-rank fits |
+| `calcium.py` | Two-photon traces to PSTHs: deconvolve (or take suite2p/OASIS spikes), smooth, resample to the model step, condition-average, normalize |
 
 ## Fitting recorded activity
 
@@ -53,6 +54,28 @@ Recordings are an `.npz` with `psth` (conditions x time steps x neurons, in the
 records 60 of the 100 neurons of a trained network, which gives a known ground truth:
 `scripts/fit_perturbation_check.py` then asks whether the fitted network predicts that
 network's response to silencing.
+
+### Low-rank fits
+
+Set `model.rank: r` to constrain the recurrent weights to low rank, after Valente,
+Pillow & Ostojic (2022, [LINT](https://github.com/adrian-valente/lowrank_inference)).
+Our implementation is written from the paper, not copied from that repo, because the repo has no license.
+With Dale's law each population gets r non-negative patterns
+(`W[:, E] = relu(m_E) relu(n_E)^T`, `W[:, I] = -relu(m_I) relu(n_I)^T`, so the rank is at most 2r).
+Without it, `W = m n^T` (rank r). A `ranks:` list fits one network per rank to the same
+recordings and writes `rank_sweep.json`:
+
+```bash
+python -m rnn_workbench fit configs/fit_need_ranks.yaml
+```
+
+### Two-photon data
+
+`calcium.psth_from_calcium(traces, conditions, order, frame_rate, dt_ms, n_steps)`
+turns (trials x frames x neurons) traces into the `psth` array. Prefer already
+deconvolved traces (suite2p `spks`, OASIS) with `deconvolve="none"`; `"ar1"` is a
+simple indicator inversion for raw dF/F. Without deconvolution the network would learn
+GCaMP's slow decay (about 0.2 to 1 s) as if it were circuit dynamics.
 
 ## Writing an experiment
 

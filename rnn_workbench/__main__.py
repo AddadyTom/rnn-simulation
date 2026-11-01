@@ -35,8 +35,12 @@ def main(argv=None):
         exp_dir = run_experiment(yaml.safe_load(args.config.read_text()))
         print(f"Report: {build_report(exp_dir)}")
     elif args.cmd == "fit":
-        from .fit import fit, load_fit_config
-        print(f"Saved fitted network to {fit(load_fit_config(yaml.safe_load(args.config.read_text())))}")
+        from .fit import fit, fit_rank_sweep, load_fit_config
+        d = yaml.safe_load(args.config.read_text())
+        if "ranks" in d:
+            print(f"Saved rank sweep to {fit_rank_sweep(d)}")
+        else:
+            print(f"Saved fitted network to {fit(load_fit_config(d))}")
     elif args.cmd == "report":
         from .report import build_report
         print(f"Report: {build_report(args.exp_dir)}")
