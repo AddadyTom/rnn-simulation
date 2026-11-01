@@ -1,6 +1,7 @@
 """Command line entry point.
 
     python -m rnn_workbench train configs/train_pdm.yaml
+    python -m rnn_workbench fit configs/fit_ss38.yaml
     python -m rnn_workbench experiment configs/exp_silence.yaml
     python -m rnn_workbench report experiments/<name>
 """
@@ -16,6 +17,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="rnn_workbench")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name, help_ in (("train", "train an ensemble from a YAML config"),
+                        ("fit", "fit networks to a recorded session (data-constrained) from a YAML config"),
                         ("experiment", "run perturbations from a YAML config and write a report")):
         p = sub.add_parser(name, help=help_)
         p.add_argument("config", type=Path)
@@ -27,6 +29,10 @@ def main(argv=None):
         from .train import load_train_config, train
         root = train(load_train_config(yaml.safe_load(args.config.read_text())))
         print(f"Saved ensemble to {root}")
+    elif args.cmd == "fit":
+        from .fit import fit, load_fit_config
+        root = fit(load_fit_config(yaml.safe_load(args.config.read_text())))
+        print(f"Saved fitted networks to {root}")
     elif args.cmd == "experiment":
         from .experiment import run_experiment
         from .report import build_report
