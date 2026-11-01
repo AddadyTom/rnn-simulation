@@ -185,3 +185,16 @@ def test_decoding_and_neurometric():
     resp[freqs == 15.0, :3] += 3
     nm = analysis.neurometric(resp, freqs)
     assert nm[15.0] > 0.9 and 0.3 < nm[1.0] < 0.75
+
+
+def test_mock_events_layout(tmp_path):
+    from rnn_workbench.data import load_events, write_mock_events
+    rows = write_mock_events(tmp_path / "events.csv", frames_per_run=(2000, 2000), inhibition_fraction=0.2)
+    ev = load_events(tmp_path / "events.csv")
+    assert len(ev) == len(rows) > 10
+    for e in ev:
+        assert e["odor_onset_frame"] - e["stim_onset_frame"] == 60  # 4 s at 15 Hz
+        lo, hi = e["stim_onset_frame"] - 15, e["stim_onset_frame"] + 97  # 1 s before to 6.5 s after
+        assert lo >= 0 and hi < 4000 and not (lo < 2000 <= hi)  # never crosses the run boundary
+        assert e["rewarded"] == int(e["licked"] and e["freq_hz"] == 0)
+    assert {"inhibition"} <= set(ev[0])

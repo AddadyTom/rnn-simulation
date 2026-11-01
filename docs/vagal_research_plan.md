@@ -49,10 +49,15 @@ The paper's mice sit at 1–3 Hz.
   steps, while condition averages fit quickly. Keep `behavior_weight` small (0.02):
   at 0.5 the lick loss dominated and activity R² stayed near 0.
 - Check on a synthetic session (60 cells, 120 trials, 400 steps): held-out PSTH R² is
-  0.20 and single-trial R² is 0.17, against a split-half noise ceiling of 0.32 / 0.25.
-- Reported on held-out trials (stratified by frequency × lick): single-trial R², PSTH R²
-  (condition = frequency × lick), median per-cell R², and lick accuracy. Always compare
-  with the split-half noise ceiling of the same session.
+  0.20 and single-trial R² 0.17. The noise ceiling on the same test trials is 0.19 and
+  0.21 (`fit.json` → `test.ceiling`). The ceiling is a condition-only model: each test
+  trial predicted by its condition's mean over the training trials. So the fit is at
+  the ceiling for averages and at 80% of it for single trials. The absolute numbers
+  are low because the synthetic spikes are Poisson-noisy and each test condition has
+  only a few trials.
+- `python -m rnn_workbench mock-events data/stav22/events.csv` writes a made-up events
+  file with SS38's layout (2 × 27,000 frames at 15 Hz, about 210 trials) to test the
+  pipeline end to end before the real file arrives.
 - Fitted networks are saved in the same format as task-trained ones, so every
   perturbation config runs on them unchanged.
 

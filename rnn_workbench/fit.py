@@ -218,6 +218,13 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
             log(f"  seed {seed} step {step:5d}  mse {loss_act.item():.4f}  test R2 psth {ev['r2_psth']:.3f}  "
                 f"single {ev['r2_single_trial']:.3f}  lick acc {ev['lick_accuracy']:.2f}  ({time.time() - t0:.0f}s)")
     final_test = evaluate_fit(forward, data, test_idx if len(test_idx) else train_idx, groups)
+    if len(test_idx):
+        ceiling = noise_ceiling(data["act"].numpy(), groups, train_idx, test_idx)
+        final_test["ceiling"] = ceiling
+        for k in ("r2_single_trial", "r2_psth"):
+            final_test[f"{k}_fraction_of_ceiling"] = final_test[k] / ceiling[k] if ceiling[k] > 0 else float("nan")
+        log(f"  seed {seed} test R2 psth {final_test['r2_psth']:.3f} of a ceiling of {ceiling['r2_psth']:.3f}; "
+            f"single trial {final_test['r2_single_trial']:.3f} of {ceiling['r2_single_trial']:.3f}")
     final_train = evaluate_fit(forward, data, train_idx, groups)
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.save({"state_dict": model.state_dict(), "model_cfg": asdict(model.cfg),
@@ -229,6 +236,21 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
     (out_dir / "fit.json").write_text(json.dumps(result))
     (out_dir / "metrics.json").write_text(json.dumps({"seed": seed, "final": {"accuracy": final_test["lick_accuracy"]}}))
     return result
+
+
+def noise_ceiling(act: np.ndarray, groups: list, train_idx, test_idx) -> dict:
+    """Best R^2 any model driven only by the trial condition can reach on the test trials:
+    predict each test trial with the mean of the training trials of its condition
+    (frequency x lick). Low values mean the test data are dominated by trial-to-trial
+    variability or by few trials per condition, not that the model is poor."""
+    mean_all = act[train_idx].mean(0)
+    psth = {}
+    for g in set(groups[i] for i in train_idx):
+        psth[g] = act[[i for i in train_idx if groups[i] == g]].mean(0)
+    pred = np.stack([psth.get(groups[i], mean_all) for i in test_idx])
+    out = r2_scores(pred, act[test_idx], [groups[i] for i in test_idx])
+    out.pop("r2_psth_per_cell")
+    return out
 
 
 def evaluate_fit(forward, data, idx, groups) -> dict:

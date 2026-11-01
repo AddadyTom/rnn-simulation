@@ -130,7 +130,54 @@ def trial_tensor(session: SessionData, pre_ms: float, total_ms: float) -> tuple[
     return out, ok
 
 
-# -- synthetic sessions (tests and demos) -----------------------------------------------
+# -- mock events and synthetic sessions (tests and demos) -----------------------------------
+
+def write_mock_events(path: Path, frames_per_run=(27000, 27000), fs: float = 15.0,
+                      freqs=(0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 15.0), p_stim: float = 0.5,
+                      trial_s: float = 16.0, threshold_hz: float = 2.0, contingency: str = "no_reward",
+                      pre_s: float = 1.0, post_s: float = 6.5, inhibition_fraction: float = 0.0,
+                      seed: int = 0) -> list[dict]:
+    """A made-up events.csv with the layout of a real session, to test the pipeline.
+
+    Trials start every `trial_s` seconds (with up to 2 s of jitter) within each run.
+    No trial window (from `pre_s` before stimulus onset to `post_s` after it) crosses a
+    run boundary or the end of the recording. The stimulus lasts 4 s and the odor starts
+    at its offset. Licks follow a logistic psychometric curve in log10(frequency) with
+    the given threshold, a 5% false-"felt it" rate without stimulation, and the chosen
+    contingency. None of this comes from real behavior.
+    """
+    rng = np.random.default_rng(seed)
+    rows, offset, trial = [], 0, 0
+    stim_frames = int(round(4.0 * fs))
+    for n in frames_per_run:
+        t = offset + int(round((pre_s + 2.0) * fs))
+        end = offset + n - int(np.ceil(post_s * fs)) - 1
+        while t <= end:
+            stim = rng.random() < p_stim
+            f = float(rng.choice(freqs)) if stim else 0.0
+            if stim:
+                p_report = 0.05 + 0.95 / (1 + np.exp(-4 * (np.log10(f) - np.log10(threshold_hz))))
+            else:
+                p_report = 0.05
+            reported = rng.random() < p_report
+            licked = int(not reported) if contingency == "no_reward" else int(reported)
+            go = (not stim) if contingency == "no_reward" else stim
+            row = {"trial": trial, "stim_onset_frame": int(t), "freq_hz": f,
+                   "odor_onset_frame": int(t + stim_frames), "licked": licked, "rewarded": int(licked and go),
+                   "contingency": contingency}
+            if inhibition_fraction > 0:
+                row["inhibition"] = int(rng.random() < inhibition_fraction)
+            rows.append(row)
+            trial += 1
+            t += int(round((trial_s + rng.uniform(0, 2.0)) * fs))
+        offset += n
+    fields = list(EVENT_COLUMNS) + ["contingency"] + (["inhibition"] if inhibition_fraction > 0 else [])
+    with open(path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fields)
+        w.writeheader()
+        w.writerows(rows)
+    return rows
+
 
 def write_synthetic_session(out_dir: Path, n_rois: int = 60, n_trials: int = 120, fs: float = 15.0,
                             freqs=(0.5, 1.0, 2.0, 3.0, 5.0, 15.0), threshold_hz: float = 2.0,
