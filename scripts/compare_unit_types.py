@@ -104,4 +104,4 @@ for k, L in agg.items():
     res[f"task-only ({len(L)} nets): {k} mean"] = {kk: round(float(np.mean([d[kk] for d in L])), 3) for kk in L[0]}
 res["task-only: lick acc vs mouse"] = accs
 print(json.dumps(res, indent=1))
-R / "compare_unit_types.json".write_text(json.dumps(res, indent=1))
+(R / "compare_unit_types.json").write_text(json.dumps(res, indent=1))
