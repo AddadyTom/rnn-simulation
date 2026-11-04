@@ -15,7 +15,7 @@ from rnn_workbench.tasks import get_task, task_config_from_dict
 from rnn_workbench.train import load_model
 
 R = ROOT / "runs"
-N_SHUFFLE = 20
+N_SHUFFLE = 0  # the ANOVA below is the significance test; shuffles made 900-unit networks take hours
 
 
 def probe(run_dir: Path, seed_dir: Path, groups):
