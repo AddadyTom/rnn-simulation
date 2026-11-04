@@ -4,6 +4,7 @@ A perturbation is described declaratively (usually from a YAML config):
 
     target:  which units
         population: "E" | "I" | "all"   pool to draw from
+        area:       0                   only units of this area (networks with areas)
         fraction:   0.3                 fraction of that pool (or)
         count:      20                  number of units (or)
         units:      [3, 17, 42]         explicit unit indices
@@ -41,15 +42,23 @@ class Perturbation:
     strength: float = 0.0
 
 
-def _pool(model: EIRNN, population: str) -> np.ndarray:
+def _pool(model: EIRNN, population: str, area: int | None = None) -> np.ndarray:
     is_exc = model.is_exc.cpu().numpy()
     if population == "E":
-        return np.flatnonzero(is_exc)
-    if population == "I":
-        return np.flatnonzero(~is_exc)
-    if population == "all":
-        return np.arange(model.cfg.n_units)
-    raise ValueError(f"unknown population {population!r}")
+        keep = is_exc
+    elif population == "I":
+        keep = ~is_exc
+    elif population == "all":
+        keep = np.ones(model.cfg.n_units, dtype=bool)
+    else:
+        raise ValueError(f"unknown population {population!r}")
+    if area is not None:
+        if model.cfg.area_of_unit is None:
+            if area != 0:
+                raise ValueError(f"area {area} asked for, but the network has one area")
+        else:
+            keep = keep & (np.asarray(model.cfg.area_of_unit) == area)
+    return np.flatnonzero(keep)
 
 
 def _n_targets(target: dict, pool_size: int) -> int:
@@ -81,7 +90,7 @@ def resolve_targets(
 ) -> np.ndarray:
     if "units" in target:
         return np.asarray(target["units"], dtype=int)
-    pool = _pool(model, target.get("population", "all"))
+    pool = _pool(model, target.get("population", "all"), target.get("area"))
     n = _n_targets(target, len(pool))
     select = target.get("select", "random")
     if select == "random":
@@ -100,7 +109,7 @@ def resolve_targets(
 
 def control_targets(model: EIRNN, target: dict, n: int, rng: np.random.Generator) -> np.ndarray:
     """Size-matched random units from the same pool (the null for any targeted effect)."""
-    pool = _pool(model, target.get("population", "all"))
+    pool = _pool(model, target.get("population", "all"), target.get("area"))
     return np.sort(rng.choice(pool, size=min(n, len(pool)), replace=False))
 
 

@@ -31,6 +31,13 @@ class ModelConfig:
     tau: float = 100.0  # ms
     noise_std: float = 0.05  # recurrent noise, in units of x, per sqrt(step)
     dale: bool = True
+    # Optional areas (e.g. insula = 0, a downstream decision area = 1). Cross-area
+    # connections come only from E units: area a feeds area a + 1, and with `feedback`
+    # every later area also projects back. I units stay local.
+    area_of_unit: list | None = None   # one area id per unit; None = one area
+    input_areas: list | None = None    # per input, the areas it reaches; None = all
+    readout_area: int | None = None    # only this area's E units drive the outputs
+    feedback: bool = True
 
 
 class EIRNN(nn.Module):
@@ -62,6 +69,21 @@ class EIRNN(nn.Module):
         self.w_raw = nn.Parameter(w)
         self.w_in_raw = nn.Parameter(torch.rand(n, cfg.n_inputs) * 0.5)
         self.b = nn.Parameter(torch.zeros(n))
+        rec_mask, in_mask, out_mask = torch.ones(n, n), torch.ones(n, cfg.n_inputs), torch.ones(self.n_exc)
+        if cfg.area_of_unit is not None:
+            area = torch.tensor(cfg.area_of_unit)
+            same = area[:, None] == area[None, :]
+            fwd = area[:, None] == area[None, :] + 1           # post is in the next area
+            back = area[:, None] < area[None, :] if cfg.feedback else torch.zeros(n, n, dtype=torch.bool)
+            rec_mask = (same | ((fwd | back) & is_exc[None, :])).float()
+            if cfg.input_areas is not None:
+                for k, allowed in enumerate(cfg.input_areas):
+                    in_mask[:, k] = torch.isin(area, torch.tensor(allowed)).float()
+            if cfg.readout_area is not None:
+                out_mask = (area[: self.n_exc] == cfg.readout_area).float()
+        self.register_buffer("rec_mask", rec_mask, persistent=False)  # rebuilt from cfg
+        self.register_buffer("in_mask", in_mask, persistent=False)
+        self.register_buffer("out_mask", out_mask, persistent=False)
         n_read = self.n_exc
         self.w_out = nn.Parameter(torch.randn(cfg.n_outputs, n_read) / n_read**0.5)
         self.b_out = nn.Parameter(torch.zeros(cfg.n_outputs))
@@ -70,12 +92,12 @@ class EIRNN(nn.Module):
     @property
     def w_rec(self) -> torch.Tensor:
         if self.cfg.dale:
-            return torch.relu(self.w_raw) * self.sign * self.no_self
-        return self.w_raw * self.no_self
+            return torch.relu(self.w_raw) * self.sign * self.no_self * self.rec_mask
+        return self.w_raw * self.no_self * self.rec_mask
 
     @property
     def w_in(self) -> torch.Tensor:
-        return torch.relu(self.w_in_raw) if self.cfg.dale else self.w_in_raw
+        return (torch.relu(self.w_in_raw) if self.cfg.dale else self.w_in_raw) * self.in_mask
 
     def forward(
         self,
@@ -116,5 +138,5 @@ class EIRNN(nn.Module):
             if silence is not None:
                 r = r.masked_fill(silence[t], 0.0)
             rates.append(r)
-            outs.append(r[:, : self.n_exc] @ self.w_out.T + self.b_out)
+            outs.append(r[:, : self.n_exc] @ (self.w_out * self.out_mask).T + self.b_out)
         return torch.stack(outs), torch.stack(rates)

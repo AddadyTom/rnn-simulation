@@ -52,6 +52,11 @@ class FitConfig:
     n_hidden_exc: int = 50
     n_inh: int = 0  # 0 = choose so that inhibitory units are 20% of the network
     recorded_inh_fraction: float = 0.0
+    # Optional downstream "decision" area (area 1) that reads from the insula (area 0)
+    # through E projections and holds the lick readout. Not fitted to any cells.
+    n_down_exc: int = 0
+    n_down_inh: int = 0
+    down_feedback: bool = True  # area 1 E units also project back to the insula
     tau: float = 100.0
     noise_std: float = 0.02
     steps: int = 2000
@@ -177,9 +182,10 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
     data = build_trials(session, task, rng, cfg.include_inhibition_trials)
     n_trials, _, n_rec = data["act"].shape
     n_rec_inh = int(round(cfg.recorded_inh_fraction * n_rec))
-    n_exc = (n_rec - n_rec_inh) + cfg.n_hidden_exc
-    n_inh = cfg.n_inh or max(1, int(round(0.25 * n_exc)))  # 20% of the network
-    n_units = n_exc + n_inh + n_rec_inh
+    n_ins_exc = (n_rec - n_rec_inh) + cfg.n_hidden_exc
+    n_inh = cfg.n_inh or max(1, int(round(0.25 * n_ins_exc)))  # 20% of the insula
+    n_exc = n_ins_exc + cfg.n_down_exc  # downstream E units sit at the end of the E block
+    n_units = n_exc + n_inh + n_rec_inh + cfg.n_down_inh  # downstream I units at the very end
     # Unit indices of the recorded cells: E units first, then (optionally) some I units.
     exc_ids = np.arange(n_rec - n_rec_inh)
     inh_ids = n_exc + np.arange(n_rec_inh)
@@ -187,8 +193,16 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
     unit_of_cell = np.empty(n_rec, dtype=int)
     unit_of_cell[order[: n_rec - n_rec_inh]] = exc_ids
     unit_of_cell[order[n_rec - n_rec_inh:]] = inh_ids
+    area_kw = {}
+    if cfg.n_down_exc > 0:
+        area = np.zeros(n_units, dtype=int)
+        area[n_ins_exc:n_exc] = 1
+        area[n_units - cfg.n_down_inh:] = 1
+        # The vagal stimulus reaches only the insula; odor and reward reach both areas.
+        area_kw = {"area_of_unit": area.tolist(), "input_areas": [[0], [0, 1], [0, 1]], "readout_area": 1,
+                   "feedback": cfg.down_feedback}
     mcfg = ModelConfig(n_units=n_units, frac_exc=n_exc / n_units, n_inputs=3, n_outputs=2, dt=cfg.task.dt,
-                       tau=cfg.tau, noise_std=cfg.noise_std, dale=True)
+                       tau=cfg.tau, noise_std=cfg.noise_std, dale=True, **area_kw)
     model = EIRNN(mcfg)
     assert model.n_exc == n_exc, "rounding of frac_exc changed the E/I split"
     readout = Readout(n_rec, cfg.calcium_tau_ms, cfg.task.dt, cfg.learn_calcium_tau)
@@ -287,7 +301,7 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
     torch.save({"state_dict": model.state_dict(), "model_cfg": asdict(model.cfg),
                 "readout": readout.state_dict(), "unit_of_cell": unit_of_cell.tolist()}, out_dir / "model.pt")
     result = {"seed": seed, "n_trials": n_trials, "n_train": len(train_idx), "n_test": len(test_idx),
-              "n_recorded": n_rec, "n_units": n_units, "n_exc": n_exc, "unit_of_cell": unit_of_cell.tolist(),
+              "n_recorded": n_rec, "n_units": n_units, "n_exc": n_exc, "model_cfg": asdict(mcfg), "unit_of_cell": unit_of_cell.tolist(),
               "roi_of_cell": session.cell_ids.tolist(), "test": final_test, "train": final_train,
               "history": history, "fit_seconds": time.time() - t0}
     if readout.calcium:
@@ -357,9 +371,7 @@ def fit(cfg: FitConfig, log=print) -> Path:
         r = fit_one(cfg, session, seed, root / f"seed_{seed}", log=log)
         summary.append({"seed": seed, "r2_psth": r["test"]["r2_psth"], "r2_single_trial": r["test"]["r2_single_trial"],
                         "lick_accuracy": r["test"]["lick_accuracy"]})
-        train_like["model"] = asdict(ModelConfig(
-            n_units=r["n_units"], frac_exc=r["n_exc"] / r["n_units"], n_inputs=3, n_outputs=2, dt=cfg.task.dt,
-            tau=cfg.tau, noise_std=cfg.noise_std, dale=True))
+        train_like["model"] = r["model_cfg"]
     (root / "train_config.json").write_text(json.dumps(train_like, indent=2))
     (root / "summary.json").write_text(json.dumps(summary, indent=2))
     return root

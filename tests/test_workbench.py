@@ -98,6 +98,18 @@ def test_silenced_units_do_not_build_up_input(model):
     assert torch.allclose(rates[20], fresh[0], atol=1e-5)
 
 
+def test_two_areas_connect_only_through_e_units():
+    area = [0] * 6 + [1] * 2 + [0] * 1 + [1] * 1  # 8 E (6 + 2), then 2 I (one per area)
+    m = EIRNN(ModelConfig(n_units=10, frac_exc=0.8, n_inputs=3, n_outputs=2, area_of_unit=area,
+                          input_areas=[[0], [0, 1], [0, 1]], readout_area=1, feedback=False))
+    w, a = m.w_rec.detach(), torch.tensor(area)
+    assert w[a == 0][:, a == 1].abs().sum() == 0  # no feedback
+    assert w[6:8][:, :6].abs().sum() > 0  # insula E feeds area 1
+    assert w[a == 1][:, 8].abs().sum() == 0  # the insula I unit stays local
+    assert m.w_in.detach()[a == 1, 0].abs().sum() == 0  # stimulus reaches the insula only
+    assert (m.out_mask == torch.tensor([0.0] * 6 + [1.0] * 2)).all()
+
+
 def test_sign_flip_p():
     assert sign_flip_p(np.array([0.1] * 8)) == pytest.approx(2 / 256)
     assert sign_flip_p(np.array([0.1, -0.1, 0.1, -0.1])) == 1.0
