@@ -27,13 +27,13 @@ tau: 100
 noise_std: 0.02
 steps: 3000
 batch_size: 16
-lr: 0.01
+lr: 0.001
 behavior_weight: 0.02             # step 6 sweeps this
 test_fraction: 0.2
 eval_every: 100
 out_dir: runs
 # Calcium (plan step 4). Way A: signal: dff_deconv (OASIS spikes from the dF/F).
 # Way B: keep signal: dff_ready and set calcium_tau_ms (e.g. 1000) to slow the model's
-# rates with a learned per-cell decay before comparing them with dF/F.
-calcium_tau_ms: 0
-learn_calcium_tau: true
+# rates with a calcium decay before comparing them with dF/F.
+calcium_tau_ms: 0                 # e.g. 1000 for way B
+learn_calcium_tau: false          # on fake data the decay was not recoverable (see docs), so fix it

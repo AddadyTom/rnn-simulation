@@ -25,7 +25,7 @@ tau: 100
 noise_std: 0.02
 steps: 3000
 batch_size: 16
-lr: 0.01
+lr: 0.001
 behavior_weight: 0.02          # keep small: the activity MSE is ~0.01-0.05
 test_fraction: 0.2
 eval_every: 100

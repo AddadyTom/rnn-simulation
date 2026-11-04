@@ -56,7 +56,7 @@ class FitConfig:
     noise_std: float = 0.02
     steps: int = 2000
     batch_size: int = 16
-    lr: float = 1e-2
+    lr: float = 1e-3  # 1e-2 can blow up the E/I balance in one Adam step on larger networks
     behavior_weight: float = 0.02  # lick-choice cross-entropy weight; activity MSE is ~0.01-0.05 for data scaled to [0, 1], so larger values let the lick loss dominate
     rate_l2: float = 1e-4
     weight_l2: float = 1e-5
@@ -193,7 +193,13 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
     assert model.n_exc == n_exc, "rounding of frac_exc changed the E/I split"
     readout = Readout(n_rec, cfg.calcium_tau_ms, cfg.task.dt, cfg.learn_calcium_tau)
     params = list(model.parameters()) + list(readout.parameters())
-    opt = torch.optim.Adam(params, lr=cfg.lr)
+    # Adam moves every weight by about lr per step, and in a network of N units the
+    # moves add up over N inputs. Scaling the recurrent weights' step by 100 / N keeps
+    # the change in each unit's total input the same as in a 100-unit network, which
+    # stops the first steps from breaking the E/I balance in large fitted networks.
+    rec_scale = min(1.0, 100.0 / n_units)
+    rest = [p for p in params if p is not model.w_raw]
+    opt = torch.optim.Adam([{"params": [model.w_raw], "lr": cfg.lr * rec_scale}, {"params": rest, "lr": cfg.lr}])
 
     # Train / test split, stratified by (frequency, lick).
     groups = [(e["freq_hz"], e["licked"]) for e in data["events"]]
@@ -254,6 +260,9 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
             raise ValueError(f"unknown target {cfg.target!r}")
         loss = (loss_act + cfg.behavior_weight * loss_beh + cfg.rate_l2 * rates.pow(2).mean()
                 + cfg.weight_l2 * model.w_rec.pow(2).sum())
+        if not torch.isfinite(loss):
+            raise FloatingPointError(f"seed {seed}: the loss became {loss.item()} at step {step}; "
+                                     f"the network's activity blew up, so try a lower lr (now {cfg.lr})")
         opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(params, 1.0)
