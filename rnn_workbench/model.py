@@ -56,19 +56,6 @@ class EIRNN(nn.Module):
         self.register_buffer("sign", sign.unsqueeze(0).expand(n, n).clone())
         self.register_buffer("no_self", 1.0 - torch.eye(n))
 
-        # Balanced initialization: inhibitory weights scaled up so that the
-        # expected E and I input to each unit roughly cancel.
-        w = torch.rand(n, n) / n**0.5
-        if cfg.dale:
-            n_inh = n - self.n_exc
-            if n_inh > 0:
-                w[:, self.n_exc :] *= self.n_exc / n_inh
-            w *= 0.5
-        else:
-            w = torch.randn(n, n) * (1.5 / n**0.5)
-        self.w_raw = nn.Parameter(w)
-        self.w_in_raw = nn.Parameter(torch.rand(n, cfg.n_inputs) * 0.5)
-        self.b = nn.Parameter(torch.zeros(n))
         rec_mask, in_mask, out_mask = torch.ones(n, n), torch.ones(n, cfg.n_inputs), torch.ones(self.n_exc)
         if cfg.area_of_unit is not None:
             area = torch.tensor(cfg.area_of_unit)
@@ -84,6 +71,29 @@ class EIRNN(nn.Module):
         self.register_buffer("rec_mask", rec_mask, persistent=False)  # rebuilt from cfg
         self.register_buffer("in_mask", in_mask, persistent=False)
         self.register_buffer("out_mask", out_mask, persistent=False)
+        # Balanced initialization: inhibitory weights scaled up so that the
+        # expected E and I input to each unit roughly cancel.
+        w = torch.rand(n, n) / n**0.5
+        if cfg.dale:
+            n_inh = n - self.n_exc
+            if n_inh > 0:
+                if cfg.area_of_unit is None:
+                    w[:, self.n_exc :] *= self.n_exc / n_inh
+                else:
+                    # Long-range E inputs start weaker (x0.1) than local ones, then each
+                    # unit's I weights are scaled to balance its own E input, which the
+                    # areas make unequal (a small area has few I units for many E inputs).
+                    cross = rec_mask * (area[:, None] != area[None, :]).float()
+                    w = w * (1.0 - 0.9 * cross)
+                    e_mass = (w * rec_mask)[:, : self.n_exc].sum(1, keepdim=True)
+                    i_mass = (w * rec_mask)[:, self.n_exc :].sum(1, keepdim=True).clamp(min=1e-6)
+                    w[:, self.n_exc :] *= e_mass / i_mass
+            w *= 0.5
+        else:
+            w = torch.randn(n, n) * (1.5 / n**0.5)
+        self.w_raw = nn.Parameter(w)
+        self.w_in_raw = nn.Parameter(torch.rand(n, cfg.n_inputs) * 0.5)
+        self.b = nn.Parameter(torch.zeros(n))
         n_read = self.n_exc
         self.w_out = nn.Parameter(torch.randn(cfg.n_outputs, n_read) / n_read**0.5)
         self.b_out = nn.Parameter(torch.zeros(cfg.n_outputs))
