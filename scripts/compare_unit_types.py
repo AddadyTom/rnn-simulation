@@ -1,8 +1,8 @@
 """Step 7 of the OI151 plan: compare unit response types in the data, the fitted network and task-only networks.
 All networks get the mouse's real trial inputs; all signals are sampled at the 15 Hz frames.
 
-Needs runs/oi151_bw0.1 (python -m rnn_workbench fit with configs/fit_oi151.yaml and
-calcium_tau_ms 1000) and runs/vagal_oi151 (train with configs/train_vagal_oi151.yaml).
+Needs runs/fit_oi151 (python -m rnn_workbench fit configs/fit_oi151.yaml)
+and runs/vagal_oi151 (train with configs/train_vagal_oi151.yaml).
 Writes runs/compare_unit_types.json."""
 import json, sys
 from pathlib import Path
@@ -15,7 +15,7 @@ from rnn_workbench.train import load_model
 from rnn_workbench.vagal_task import VagalOptoTask
 
 R = ROOT / "runs"
-cfg = F.load_fit_config(json.load(open(R / "oi151_bw0.1/train_config.json"))["fit"])
+cfg = F.load_fit_config(json.load(open(R / "fit_oi151/train_config.json"))["fit"])
 cfg.session_dir = str(ROOT / cfg.session_dir)
 sess = load_session(Path(cfg.session_dir), cfg.events_file, cfg.iscell_file, cfg.signal, cfg.fs, cfg.smooth_frames)
 task = VagalOptoTask(cfg.task)
@@ -73,8 +73,8 @@ res = {}
 act = data["act"].numpy()
 res["data (576 cells)"] = classify(act)
 
-ck = torch.load(R / "oi151_bw0.1/seed_0/model.pt", weights_only=False)
-fm = load_model(R / "oi151_bw0.1/seed_0")
+ck = torch.load(R / "fit_oi151/seed_0/model.pt", weights_only=False)
+fm = load_model(R / "fit_oi151/seed_0")
 ro = F.Readout(act.shape[2], cfg.calcium_tau_ms or 1000, cfg.task.dt, False)
 ro.load_state_dict(ck["readout"], strict=False)
 units = torch.tensor(ck["unit_of_cell"])

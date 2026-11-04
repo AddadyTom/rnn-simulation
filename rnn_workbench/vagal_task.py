@@ -105,6 +105,16 @@ def reward_window(cfg: VagalTaskConfig, per: dict, T: int) -> tuple[int, int]:
     return min(s, T), min(s + int(round(cfg.reward_ms / cfg.dt)), T)
 
 
+def choice_window(cfg: VagalTaskConfig, per: dict, T: int) -> tuple[int, int]:
+    """Steps where the lick choice is read. With reward inside the response window
+    (reward_delay set), the choice is the licking before the reward arrives, from odor
+    onset to reward onset, as the mouse's first lick opens the valve. Otherwise the
+    response window."""
+    if cfg.reward_delay is None:
+        return per["response"]
+    return odor_window(per)[0], reward_window(cfg, per, T)[0]
+
+
 def n_steps(cfg: VagalTaskConfig) -> int:
     return steps_per_period(cfg)["outcome"][1]
 
@@ -219,20 +229,24 @@ class VagalOptoTask:
 
     # -- running and scoring ------------------------------------------------------
     def choices(self, outputs: torch.Tensor, batch: TrialBatch) -> np.ndarray:
-        """1 = licked, 0 = withheld (mean lick probability over the response window > 0.5)."""
-        s, e = batch.periods["response"]
+        """1 = licked, 0 = withheld (mean lick probability over the choice window > 0.5)."""
+        s, e = choice_window(self.cfg, batch.periods, outputs.shape[0])
         p_lick = torch.softmax(outputs[s:e], -1)[..., 1].mean(0)
         return (p_lick > 0.5).cpu().numpy().astype(int)
 
     def run(self, model, batch: TrialBatch, silence=None, current=None, noise=True):
         """Closed loop: run to get the choice, then set the reward input from the
-        network's own licks and run again. The choice is taken from the first pass.
+        network's own licks and run again. The choice is taken from the first pass,
+        which gets no reward input, so a perturbed network cannot read its answer from
+        a reward it has not earned yet.
         With the default timing reward arrives after the response window, so the
         second pass gives the same choice when the noise is reseeded; with
         `reward_delay` set, reward lands inside the window and only later steps change."""
         state = torch.random.get_rng_state()
+        x0 = batch.inputs.clone()
+        x0[:, :, 2] = 0.0  # the choice is made before any reward
         with torch.no_grad():
-            out, _ = model(batch.inputs, silence=silence, current=current, noise=noise)
+            out, _ = model(x0, silence=silence, current=current, noise=noise)
         licked = self.choices(out, batch)
         x = batch.inputs.clone()
         qs, qe = reward_window(self.cfg, batch.periods, x.shape[0])

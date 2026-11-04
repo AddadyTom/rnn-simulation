@@ -33,7 +33,7 @@ import torch.nn.functional as F
 
 from .data import SessionData, load_session, trial_tensor
 from .model import EIRNN, ModelConfig
-from .vagal_task import VagalOptoTask, VagalTaskConfig, reward_window
+from .vagal_task import VagalOptoTask, VagalTaskConfig, choice_window, reward_window
 
 
 @dataclass
@@ -213,7 +213,7 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
         raise ValueError("no training trials")
     units = torch.from_numpy(unit_of_cell)
     fs_steps = data["frame_steps"]
-    rs, re = task.periods["response"]
+    rs, re = choice_window(task.cfg, task.periods, task.T)  # licks before the reward
 
     def forward(idx, noise=True):
         x = data["x"][:, idx]

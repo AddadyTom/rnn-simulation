@@ -3,7 +3,7 @@
 # model_dir: runs/vagal_oi151 for the task-only networks.
 # The test probes 0.5-15 Hz, although the mouse and the fit only saw 15 Hz (Q2).
 name: oi151_inhibition_fitted
-model_dir: runs/oi151_bw0.1
+model_dir: runs/fit_oi151
 trials_per_condition: 40
 out_dir: experiments
 task_overrides:

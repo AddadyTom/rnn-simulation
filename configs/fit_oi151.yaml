@@ -20,6 +20,7 @@ task:
   response_weight: 5.0
   odor_weight: 1.0
   reward_ms: 1000                 # reward starts at each trial's valve frame (events.csv reward_frame)
+  reward_delay: 200               # valve about 0.2 s into the reward window; the lick choice is read from odor onset to then
 n_hidden_exc: 150
 n_inh: 0                          # 0 = 20% of the network
 recorded_inh_fraction: 0.0
@@ -35,5 +36,5 @@ out_dir: runs
 # Calcium (plan step 4). Way A: signal: dff_deconv (OASIS spikes from the dF/F).
 # Way B: keep signal: dff_ready and set calcium_tau_ms (e.g. 1000) to slow the model's
 # rates with a calcium decay before comparing them with dF/F.
-calcium_tau_ms: 0                 # e.g. 1000 for way B
+calcium_tau_ms: 1000              # way B, the main option (it reached more of its ceiling than way A); 0 = off
 learn_calcium_tau: false          # on fake data the decay was not recoverable (see docs), so fix it
