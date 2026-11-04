@@ -76,7 +76,11 @@ def train_one(cfg: TrainConfig, seed: int, out_dir: Path, log=print) -> dict:
         cfg.model = model.cfg
     else:
         model = EIRNN(cfg.model)
-    opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    # Same rule as fit.py: scale the recurrent weights' step by 100 / N so large
+    # networks keep their E/I balance (no change at 100 units or fewer).
+    rec_scale = min(1.0, 100.0 / model.cfg.n_units)
+    rest = [p for p in model.parameters() if p is not model.w_raw]
+    opt = torch.optim.Adam([{"params": [model.w_raw], "lr": cfg.lr * rec_scale}, {"params": rest, "lr": cfg.lr}])
     history = []
     t0 = time.time()
     for step in range(1, cfg.steps + 1):

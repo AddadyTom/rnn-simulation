@@ -178,6 +178,21 @@ def test_tuning_classes_separates_sigmoid_and_gaussian():
     assert 2 < tc[0]["threshold_hz"] < 4.5 and 1 < tc[1]["peak_hz"] < 2.2
 
 
+def test_checked_tuning_labels_suppressed_weak_and_rising_units():
+    rng = np.random.default_rng(0)
+    levels = np.array([0, 0.5, 1, 2, 3, 5, 8, 15.0])
+    freqs = np.repeat(levels, 20)
+    lf = np.log10(np.where(freqs > 0, freqs, 0.25))
+    sig = 1 / (1 + np.exp(-6 * (lf - np.log10(3))))
+    gau = np.exp(-0.5 * ((lf - np.log10(1.5)) / 0.2) ** 2)
+    sup = -gau  # a suppressed unit: a negative Gaussian would fit it
+    weak = 0.02 * sig
+    rising = (freqs / 15.0) ** 3  # still steepening at the top frequency
+    resp = np.stack([sig, gau, sup, weak, rising], 1) + 0.01 * rng.normal(size=(len(freqs), 5))
+    kinds = [t["kind"] for t in analysis.tuning_classes_checked(resp, freqs, n_shuffle=20)]
+    assert kinds == ["sigmoid", "gaussian", "suppressed", "weak", "rising"]
+
+
 def test_decoding_and_neurometric():
     rng = np.random.default_rng(0)
     freqs = np.repeat([0.0, 1.0, 15.0], 40)

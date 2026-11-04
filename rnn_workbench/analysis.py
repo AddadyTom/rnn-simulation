@@ -108,6 +108,56 @@ def tuning_classes(resp: np.ndarray, freqs: np.ndarray, n_shuffle: int = 100, al
 
 # -- choice probability -----------------------------------------------------------------
 
+def tuning_classes_checked(resp: np.ndarray, freqs: np.ndarray, min_amp_frac: float = 0.1,
+                           gauss_drop: float = 0.3, **kw) -> list[dict]:
+    """tuning_classes with the checks a model population needs before counting.
+
+    Model trials are much less noisy than imaging trials, so the shuffle test alone
+    passes almost every unit, and a suppressed unit can fit a (negative) Gaussian. So:
+    - "suppressed": the strongest change from the no-stimulation level is a drop.
+    - "weak": the largest rise is under `min_amp_frac` of the population's 95th
+      percentile rise (scale-free, so it works for dF/F and model rates alike).
+    - "gaussian" needs a peak below the top frequency and a fall at the top frequency of
+      at least `gauss_drop` of the rise; otherwise the unit is refitted as sigmoid-like.
+    - "sigmoid" needs its threshold inside the tested range; a curve still steepening at
+      the top frequency is "rising" instead.
+    The remaining units go through tuning_classes (with its shuffle test, `kw`)."""
+    freqs = np.asarray(freqs, dtype=float)
+    levels = np.unique(freqs)
+    pos = levels[levels > 0]
+    mean = np.array([resp[freqs == f].mean(0) for f in levels])  # (levels, units)
+    rise = mean[1:].max(0) - mean[0]
+    drop = mean[0] - mean[1:].min(0)
+    ref = np.percentile(np.maximum(rise, 0), 95) if resp.shape[1] else 0.0
+    out = [None] * resp.shape[1]
+    keep = []
+    for u in range(resp.shape[1]):
+        if drop[u] > rise[u]:
+            out[u] = {"unit": u, "kind": "suppressed"}
+        elif ref <= 0 or rise[u] < min_amp_frac * ref:
+            out[u] = {"unit": u, "kind": "weak"}
+        else:
+            keep.append(u)
+    if keep:
+        for rec, u in zip(tuning_classes(resp[:, keep], freqs, **kw), keep):
+            rec = {**rec, "unit": u}
+            if rec["kind"] == "gaussian":
+                y = mean[1:, u]
+                peak = y.max()
+                if np.argmax(y) == len(y) - 1 or peak - y[-1] < gauss_drop * rise[u]:
+                    rec["kind"] = "sigmoid" if rec["r2_sigmoid"] > rec["r2_null"] else "none"
+                    rec.pop("peak_hz", None)
+            if rec["kind"] == "sigmoid":
+                if "threshold_hz" not in rec:  # relabelled from Gaussian: fit the sigmoid's threshold
+                    x = np.array([np.log10(f) if f > 0 else np.log10(pos.min()) - 0.5 for f in levels])
+                    (_, p_s), _ = _fit_both(x, mean[:, u])
+                    rec["threshold_hz"] = float(10 ** p_s[2]) if p_s is not None else float("nan")
+                if not (pos.min() <= rec["threshold_hz"] <= pos.max()):
+                    rec["kind"] = "rising"
+            out[u] = rec
+    return out
+
+
 def auroc(a: np.ndarray, b: np.ndarray) -> float:
     """P(random a > random b) + 0.5 P(tie), i.e. the area under the ROC curve."""
     a, b = np.asarray(a, float), np.asarray(b, float)
