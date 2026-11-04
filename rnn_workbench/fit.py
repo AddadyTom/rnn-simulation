@@ -42,7 +42,7 @@ class FitConfig:
     session_dir: str = ""
     events_file: str = "events.csv"
     iscell_file: str = "iscell_final.npy"
-    signal: str = "spks"  # "spks" (deconvolved) or "dff"
+    signal: str = "spks"  # "spks" (deconvolved), "dff", "dff_ready" (lab dF/F) or "dff_deconv" (lab dF/F + OASIS)
     target: str = "psth"  # "psth": fit condition averages (frequency x lick x reward); "single_trial"
     fs: float = 15.0
     smooth_frames: float = 1.0
@@ -62,6 +62,8 @@ class FitConfig:
     weight_l2: float = 1e-5
     test_fraction: float = 0.2
     eval_every: int = 100
+    calcium_tau_ms: float = 0.0  # > 0: slow each fitted unit's rate with this calcium decay before comparing (way B)
+    learn_calcium_tau: bool = True  # learn one decay per cell, starting at calcium_tau_ms
     out_dir: str = "runs"
 
 
@@ -72,14 +74,40 @@ def load_fit_config(d: dict) -> FitConfig:
 
 
 class Readout(nn.Module):
-    """Per-neuron affine map from model rate to the recorded signal (gain >= 0)."""
+    """Per-neuron map from model rate to the recorded signal: optionally a calcium
+    filter (c[t] = a c[t-1] + (1 - a) r[t], a = exp(-dt / tau), one tau per cell), then
+    an affine map with gain >= 0.
 
-    def __init__(self, n: int):
+    forward(r, steps): r is (T, B, n) over all model steps; returns (T_frames, B, n) at
+    the model steps in `steps` (the frame times).
+    """
+
+    def __init__(self, n: int, calcium_tau_ms: float = 0.0, dt: float = 20.0, learn_tau: bool = True):
         super().__init__()
         self.log_gain = nn.Parameter(torch.zeros(n))
         self.offset = nn.Parameter(torch.zeros(n))
+        self.dt = dt
+        self.calcium = calcium_tau_ms > 0
+        if self.calcium:
+            log_tau = torch.full((n,), float(np.log(calcium_tau_ms)))
+            if learn_tau:
+                self.log_tau = nn.Parameter(log_tau)
+            else:
+                self.register_buffer("log_tau", log_tau)
 
-    def forward(self, r):
+    def tau_ms(self) -> torch.Tensor | None:
+        return self.log_tau.exp().clamp(min=self.dt) if self.calcium else None
+
+    def forward(self, r, steps=None):
+        if self.calcium:
+            a = torch.exp(-self.dt / self.tau_ms())
+            c, out = torch.zeros_like(r[0]), []
+            for t in range(r.shape[0]):
+                c = a * c + (1 - a) * r[t]
+                out.append(c)
+            r = torch.stack(out)
+        if steps is not None:
+            r = r[steps]
         return F.softplus(self.log_gain) * 1.4427 * r + self.offset  # softplus(0)*1.44 ~= 1
 
 
@@ -163,7 +191,7 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
                        tau=cfg.tau, noise_std=cfg.noise_std, dale=True)
     model = EIRNN(mcfg)
     assert model.n_exc == n_exc, "rounding of frac_exc changed the E/I split"
-    readout = Readout(n_rec)
+    readout = Readout(n_rec, cfg.calcium_tau_ms, cfg.task.dt, cfg.learn_calcium_tau)
     params = list(model.parameters()) + list(readout.parameters())
     opt = torch.optim.Adam(params, lr=cfg.lr)
 
@@ -184,7 +212,7 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
     def forward(idx, noise=True):
         x = data["x"][:, idx]
         out, rates = model(x, noise=noise)
-        pred = readout(rates[fs_steps][:, :, units]).transpose(0, 1)  # (B, n_frames, n_rec)
+        pred = readout(rates[:, :, units], fs_steps).transpose(0, 1)  # (B, n_frames, n_rec)
         lick_logit = out[rs:re].mean(0)  # (B, 2)
         return pred, lick_logit, rates
 
@@ -207,7 +235,7 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
 
     def forward_x(x, noise=True):
         out, rates = model(x, noise=noise)
-        pred = readout(rates[fs_steps][:, :, units]).transpose(0, 1)
+        pred = readout(rates[:, :, units], fs_steps).transpose(0, 1)
         return pred, out[rs:re].mean(0), rates
 
     history, t0 = [], time.time()
@@ -252,6 +280,10 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
               "n_recorded": n_rec, "n_units": n_units, "n_exc": n_exc, "unit_of_cell": unit_of_cell.tolist(),
               "roi_of_cell": session.cell_ids.tolist(), "test": final_test, "train": final_train,
               "history": history, "fit_seconds": time.time() - t0}
+    if readout.calcium:
+        tau = readout.tau_ms().detach().numpy()
+        result["calcium_tau_ms"] = {"median": float(np.median(tau)), "p10": float(np.percentile(tau, 10)),
+                                    "p90": float(np.percentile(tau, 90))}
     (out_dir / "fit.json").write_text(json.dumps(result))
     (out_dir / "metrics.json").write_text(json.dumps({"seed": seed, "final": {"accuracy": final_test["lick_accuracy"]}}))
     return result

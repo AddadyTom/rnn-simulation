@@ -46,6 +46,7 @@ session in the same format for testing.
 | `vagal_task.py` | The interoceptive detection and psychophysics task: vagal pulse-train input, odor, closed-loop reward; paper-style metrics (correct rejections, hits, d′, threshold) |
 | `data.py` | suite2p session loader, `events.csv` format, trial alignment, synthetic sessions |
 | `lab_format.py` | Converts the lab's export (dF/F pickle, per-trial event lists) into a session folder, with consistency checks |
+| `deconv.py` | OASIS deconvolution of dF/F into estimated firing (the `oasis-deconv` package if installed, else NumPy) |
 | `fit.py` | Data-constrained training: recorded cells mapped to E units, held-out R², output perturbable like any ensemble |
 | `analysis.py` | Sigmoid vs Gaussian tuning, choice probability, SVM decoding and neurometric curves, for model units or recorded cells |
 | `train.py` | Trains one network per seed (BPTT, Adam, rate and weight L2) and saves checkpoints |

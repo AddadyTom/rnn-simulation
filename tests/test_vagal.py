@@ -252,3 +252,35 @@ def test_convert_lab_session_and_fit(tmp_path):
                     eval_every=2, n_hidden_exc=4, out_dir=str(tmp_path / "runs"))
     root = fit(cfg, log=lambda *_: None)
     assert (root / "seed_0" / "fit.json").exists()
+
+
+def test_calcium_readout_is_exponential_smoothing():
+    from rnn_workbench.fit import Readout
+    ro = Readout(2, calcium_tau_ms=200.0, dt=20.0)
+    r = torch.zeros(60, 1, 2)
+    r[10] = 1.0
+    out = ro(r, torch.arange(60)).detach()
+    a = np.exp(-20 / 200)
+    assert torch.allclose(out[10:20, 0, 0], torch.tensor((1 - a) * a ** np.arange(10), dtype=torch.float32), atol=1e-6)
+    assert out[:10].abs().max() == 0
+
+
+def test_oasis_numpy_recovers_spikes():
+    from rnn_workbench.deconv import oasis_ar1
+    rng = np.random.default_rng(0)
+    g = np.exp(-1 / 15)
+    s = (rng.random(2000) < 0.03) * 1.0
+    c = np.zeros_like(s)
+    for t in range(len(s)):
+        c[t] = (g * c[t - 1] if t else 0) + s[t]
+    _, est = oasis_ar1(c + 0.1 * rng.standard_normal(len(s)), g, lam=0.3)
+    k = np.ones(5)
+    assert np.corrcoef(np.convolve(est, k, "same"), np.convolve(s, k, "same"))[0, 1] > 0.9
+
+
+def test_fit_with_calcium_decay(session_dir, tmp_path):
+    cfg = FitConfig(name="ca", session_dir=str(session_dir), steps=2, eval_every=2, n_hidden_exc=4,
+                    calcium_tau_ms=500.0, out_dir=str(tmp_path))
+    root = fit(cfg, log=lambda *_: None)
+    r = json.loads((root / "seed_0" / "fit.json").read_text())
+    assert 300 < r["calcium_tau_ms"]["median"] < 800

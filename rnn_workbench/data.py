@@ -27,7 +27,8 @@ optional:
     outcome            hit | miss | cr | fa (kept for analyses)
 
 The lab's own export format (per-trial pickles plus dF/F) is converted by
-lab_format.convert_session; the resulting session uses signal "dff_ready".
+lab_format.convert_session; the resulting session uses signal "dff_ready" (the lab's
+dF/F) or "dff_deconv" (that dF/F deconvolved with OASIS, see deconv.py).
 """
 
 from __future__ import annotations
@@ -117,6 +118,16 @@ def load_session(session_dir: Path, events_file: str = "events.csv", iscell_file
     if signal == "dff_ready":  # lab-computed dF/F of curated cells (lab_format.convert_session)
         raw = np.load(d / "dff.npy", mmap_mode="r", allow_pickle=False)
         traces = preprocess(raw, "dff_ready", smooth_frames=smooth_frames)
+        return SessionData(traces=traces, cell_ids=np.arange(raw.shape[0]), fs=fs, events=load_events(d / events_file))
+    if signal == "dff_deconv":  # the same dF/F, deconvolved with OASIS (cached next to it)
+        cache = d / "spks_deconv.npy"
+        if cache.exists():
+            raw = np.load(cache, allow_pickle=False)
+        else:
+            from .deconv import deconvolve
+            raw = deconvolve(np.load(d / "dff.npy", allow_pickle=False), fs)
+            np.save(cache, raw)
+        traces = preprocess(raw, "spks", smooth_frames=smooth_frames)
         return SessionData(traces=traces, cell_ids=np.arange(raw.shape[0]), fs=fs, events=load_events(d / events_file))
     iscell = np.load(d / iscell_file, allow_pickle=False)
     cells = np.flatnonzero(iscell[:, 0] > 0.5)
