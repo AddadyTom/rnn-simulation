@@ -15,7 +15,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .perturb import Perturbation, build_masks, choice_selectivity, control_targets, resolve_targets
+from .perturb import (Perturbation, build_masks, choice_selectivity, control_targets, resolve_targets,
+                      stimulus_response)
 from .tasks import get_task, task_config_from_dict
 from .train import load_model
 
@@ -93,7 +94,9 @@ def pca_trajectories(rates_by_cond: dict, batch, n_comp: int = 2, key=None) -> d
 def run_experiment(cfg: dict, log=print) -> Path:
     run_dir = Path(cfg["model_dir"])
     train_cfg = json.loads((run_dir / "train_config.json").read_text())
-    task = get_task(task_config_from_dict(train_cfg["task"]))
+    # task_overrides changes the test task only, e.g. reward timing or the frequencies
+    # probed, for networks fitted with a different setting.
+    task = get_task(task_config_from_dict({**train_cfg["task"], **cfg.get("task_overrides", {})}))
     seeds = cfg.get("seeds") or train_cfg["seeds"]
     perts = [Perturbation(**p) for p in cfg["perturbations"]]
     n_trials = int(cfg.get("trials_per_condition", 40))
@@ -111,27 +114,37 @@ def run_experiment(cfg: dict, log=print) -> Path:
         rng = np.random.default_rng(seed)
         intact, intact_rates = run_condition(model, batch, task=task)
         sel = choice_selectivity(intact_rates, batch)
+        resp = stimulus_response(intact_rates, batch)
         seed_res = {"intact": intact, "perturbations": {}}
         rates_by_cond = {"intact": intact_rates}
         n = model.cfg.n_units
         for p in perts:
             # Random targets are redrawn n_draws times and averaged; selected targets are fixed.
             is_random = "units" not in p.target and p.target.get("select", "random") == "random"
-            target_sets = [resolve_targets(model, p.target, rng, selectivity=sel)
+            target_sets = [resolve_targets(model, p.target, rng, selectivity=sel, response=resp)
                            for _ in range(n_draws if is_random else 1)]
             ctrl_pool = control_population(p.target, cfg)
             ctrl_target = {**p.target, "population": ctrl_pool}
             ctrl_sets = [control_targets(model, ctrl_target, len(target_sets[0]), rng) for _ in range(n_draws)]
-            pert_runs = [run_condition(model, batch, *build_masks(p, u, batch, n), task=task) for u in target_sets]
+            # Keep the rates of the first draw only: in large fitted networks one set of
+            # rates is hundreds of MB, so keeping every draw runs out of memory.
+            pert_beh, rates = [], None
+            for u in target_sets:
+                b, r = run_condition(model, batch, *build_masks(p, u, batch, n), task=task)
+                pert_beh.append(b)
+                rates = r if rates is None else rates
+                del r
             ctrl_runs = [run_condition(model, batch, *build_masks(p, u, batch, n), task=task)[0] for u in ctrl_sets]
-            beh, rates = average_behavior([b for b, _ in pert_runs]), pert_runs[0][1]
+            beh = average_behavior(pert_beh)
             ctrl = average_behavior(ctrl_runs)
             seed_res["perturbations"][p.name] = {
                 "units": target_sets[0].tolist(), "n_target_draws": len(target_sets),
                 "control_population": ctrl_pool, "n_control_draws": len(ctrl_sets),
                 "perturbed": beh, "control": ctrl,
             }
-            rates_by_cond[p.name] = rates
+            if example is None:  # only the first seed's rates feed the example plots
+                rates_by_cond[p.name] = rates
+            del rates
             log(f"  seed {seed}  {p.name:28s} acc intact {intact['accuracy']:.3f}  "
                 f"perturbed {beh['accuracy']:.3f}  control {ctrl['accuracy']:.3f}")
         results["seeds"][str(seed)] = seed_res

@@ -7,7 +7,9 @@ A perturbation is described declaratively (usually from a YAML config):
         fraction:   0.3                 fraction of that pool (or)
         count:      20                  number of units (or)
         units:      [3, 17, 42]         explicit unit indices
-        select:     "random" | "top_choice"   how to pick within the pool
+        select:     "random" | "top_choice" | "most_suppressed" | "most_excited"
+                    how to pick within the pool (the last two rank units by their change
+                    in rate from baseline to stimulus on stimulation trials)
     kind:    "silence"  clamp rates to 0 in the window (acute, like optogenetic inhibition)
              "lesion"   clamp rates to 0 for the whole trial (permanent ablation)
              "current"  add `strength` to the units' input in the window (+ excite, - inhibit)
@@ -64,8 +66,18 @@ def choice_selectivity(rates: torch.Tensor, batch: TrialBatch) -> np.ndarray:
     return np.abs(r[gt == 1].mean(0) - r[gt == 0].mean(0))
 
 
+def stimulus_response(rates: torch.Tensor, batch: TrialBatch) -> np.ndarray:
+    """Mean rate during the stimulus minus mean rate during the baseline, on stimulation trials."""
+    s, e = batch.periods["stimulus"]
+    bs, be = batch.periods["baseline"]
+    gt = np.array([c["ground_truth"] for c in batch.conditions]) == 1
+    r = rates.cpu().numpy()[:, gt]
+    return r[s:e].mean((0, 1)) - r[bs:be].mean((0, 1))
+
+
 def resolve_targets(
-    model: EIRNN, target: dict, rng: np.random.Generator, selectivity: np.ndarray | None = None
+    model: EIRNN, target: dict, rng: np.random.Generator, selectivity: np.ndarray | None = None,
+    response: np.ndarray | None = None,
 ) -> np.ndarray:
     if "units" in target:
         return np.asarray(target["units"], dtype=int)
@@ -78,6 +90,11 @@ def resolve_targets(
         if selectivity is None:
             raise ValueError("select='top_choice' needs choice selectivity")
         return np.sort(pool[np.argsort(selectivity[pool])[::-1][:n]])
+    if select in ("most_suppressed", "most_excited"):
+        if response is None:
+            raise ValueError(f"select={select!r} needs the units' stimulus responses")
+        order = np.argsort(response[pool])
+        return np.sort(pool[order[:n] if select == "most_suppressed" else order[::-1][:n]])
     raise ValueError(f"unknown select {select!r}")
 
 

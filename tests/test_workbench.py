@@ -77,6 +77,27 @@ def test_population_targets_and_controls(model):
     assert len(ctrl) == 7 and model.is_exc[ctrl].all()
 
 
+def test_select_most_suppressed_and_excited(model):
+    rng = np.random.default_rng(0)
+    response = np.arange(50, dtype=float) - 20.0  # unit 0 drops most, unit 39 (last E) rises most
+    sup = resolve_targets(model, {"population": "E", "count": 3, "select": "most_suppressed"}, rng, response=response)
+    exc = resolve_targets(model, {"population": "E", "count": 3, "select": "most_excited"}, rng, response=response)
+    assert sup.tolist() == [0, 1, 2] and exc.tolist() == [37, 38, 39]
+
+
+def test_silenced_units_do_not_build_up_input(model):
+    """A silenced unit is held down, so right after silencing ends it starts from rest
+    instead of from the input it received while silenced."""
+    T, B, n = 30, 2, model.cfg.n_units
+    u = torch.ones(T, B, 3)
+    silence = torch.zeros(T, B, n, dtype=torch.bool)
+    silence[:20] = True
+    _, rates = model(u, silence=silence, noise=False)
+    _, fresh = model(u[20:], noise=False)
+    assert rates[:20].abs().max() == 0
+    assert torch.allclose(rates[20], fresh[0], atol=1e-5)
+
+
 def test_sign_flip_p():
     assert sign_flip_p(np.array([0.1] * 8)) == pytest.approx(2 / 256)
     assert sign_flip_p(np.array([0.1, -0.1, 0.1, -0.1])) == 1.0

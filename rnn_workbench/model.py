@@ -87,7 +87,7 @@ class EIRNN(nn.Module):
         """Run the network.
 
         u:        (T, B, n_inputs) inputs
-        silence:  (T, B, N) bool, True where a unit's rate is clamped to 0
+        silence:  (T, B, N) bool, True where a unit's rate is clamped to 0 and its state held at or below 0
         current:  (T, B, N) extra input current added to the units (optogenetic drive)
         Returns outputs (T, B, n_outputs) and rates (T, B, N).
         """
@@ -107,6 +107,11 @@ class EIRNN(nn.Module):
             x = (1 - self.alpha) * x + self.alpha * inp
             if noise and noise_scale > 0:
                 x = x + noise_scale * torch.randn_like(x)
+            if silence is not None:
+                # Hold silenced units down (like optogenetic hyperpolarisation): their
+                # state cannot climb above threshold, so they do not build up input
+                # while silenced and come back without a memory of it.
+                x = torch.where(silence[t], x.clamp(max=0.0), x)
             r = torch.relu(x)
             if silence is not None:
                 r = r.masked_fill(silence[t], 0.0)
