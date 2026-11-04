@@ -279,8 +279,9 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
         final_test["ceiling"] = ceiling
         for k in ("r2_single_trial", "r2_psth"):
             final_test[f"{k}_fraction_of_ceiling"] = final_test[k] / ceiling[k] if ceiling[k] > 0 else float("nan")
-        log(f"  seed {seed} test R2 psth {final_test['r2_psth']:.3f} of a ceiling of {ceiling['r2_psth']:.3f}; "
-            f"single trial {final_test['r2_single_trial']:.3f} of {ceiling['r2_single_trial']:.3f}")
+        log(f"  seed {seed} test R2 psth {final_test['r2_psth']:.3f} (ceiling {ceiling['r2_psth']:.3f}, baseline "
+            f"{ceiling['baseline_r2_psth']:.3f}); single trial {final_test['r2_single_trial']:.3f} (ceiling "
+            f"{ceiling['r2_single_trial']:.3f}, baseline {ceiling['baseline_r2_single_trial']:.3f})")
     final_train = evaluate_fit(forward, data, train_idx, groups)
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.save({"state_dict": model.state_dict(), "model_cfg": asdict(model.cfg),
@@ -299,18 +300,38 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
 
 
 def noise_ceiling(act: np.ndarray, groups: list, train_idx, test_idx) -> dict:
-    """Best R^2 any model driven only by the trial condition can reach on the test trials:
-    predict each test trial with the mean of the training trials of its condition
-    (frequency x lick). Low values mean the test data are dominated by trial-to-trial
-    variability or by few trials per condition, not that the model is poor."""
+    """How well the test trials could be predicted at best, and by a simple baseline.
+
+    r2_psth, r2_single_trial: the expected R^2 of the TRUE condition means (frequency x
+    lick) against the test data. Trial-to-trial variability inside a condition cannot be
+    predicted from its inputs, so it is subtracted: estimated from all trials of the
+    condition, and divided by the number of test trials for the averaged (PSTH) score.
+    baseline_*: the R^2 of predicting each test trial with the mean of the training
+    trials of its condition. A good model should land between the two."""
+    test_groups = [groups[i] for i in test_idx]
     mean_all = act[train_idx].mean(0)
     psth = {}
     for g in set(groups[i] for i in train_idx):
         psth[g] = act[[i for i in train_idx if groups[i] == g]].mean(0)
     pred = np.stack([psth.get(groups[i], mean_all) for i in test_idx])
-    out = r2_scores(pred, act[test_idx], [groups[i] for i in test_idx])
-    out.pop("r2_psth_per_cell")
-    return out
+    base = r2_scores(pred, act[test_idx], test_groups)
+    data = act[test_idx]
+    keys = sorted(set(test_groups))
+    noise_single, noise_psth = 0.0, 0.0
+    test_psth = []
+    for k in keys:
+        all_k = act[[i for i, g in enumerate(groups) if g == k]]
+        n_test = sum(g == k for g in test_groups)
+        var = all_k.var(0, ddof=1) if len(all_k) > 1 else np.zeros(all_k.shape[1:])
+        noise_single += n_test * var.sum()
+        noise_psth += var.sum() / n_test
+        test_psth.append(data[[g == k for g in test_groups]].mean(0))
+    test_psth = np.stack(test_psth)
+    ss_single = ((data - data.mean()) ** 2).sum()
+    ss_psth = ((test_psth - test_psth.mean()) ** 2).sum()
+    return {"r2_single_trial": float(1 - noise_single / max(ss_single, 1e-12)),
+            "r2_psth": float(1 - noise_psth / max(ss_psth, 1e-12)),
+            "baseline_r2_single_trial": base["r2_single_trial"], "baseline_r2_psth": base["r2_psth"]}
 
 
 def evaluate_fit(forward, data, idx, groups) -> dict:
