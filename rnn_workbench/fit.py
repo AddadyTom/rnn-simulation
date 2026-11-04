@@ -7,8 +7,9 @@ Model:   the usual EIRNN, with n_units = n_recorded + n_hidden_exc + n_inh.
          by default every recorded cell is treated as E and the inhibitory population is
          unobserved (set `recorded_inh_fraction` to assign a random share to I instead).
 Inputs:  built from each trial's events with the VagalOpto task (vagal drive at the
-         trial's frequency, odor during the response window, reward when it was
-         actually delivered).
+         trial's frequency, odor at the task's odor time, reward when it was
+         actually delivered: at the valve frame when events.csv has `reward_frame`,
+         otherwise in the task's reward window).
 Targets: preprocessed activity of each recorded cell (see data.py), compared with
          gain_i * rate_i + offset_i at the frame times, plus the mouse's lick choice
          through the lick readout.
@@ -32,7 +33,7 @@ import torch.nn.functional as F
 
 from .data import SessionData, load_session, trial_tensor
 from .model import EIRNN, ModelConfig
-from .vagal_task import VagalOptoTask, VagalTaskConfig
+from .vagal_task import VagalOptoTask, VagalTaskConfig, reward_window
 
 
 @dataclass
@@ -99,16 +100,30 @@ def build_trials(session: SessionData, task: VagalOptoTask, rng: np.random.Gener
                          f"timing expects {expected:.1f}; adjust task.timing to match the rig")
     freqs = [e["freq_hz"] for e in events]
     x, y, w, conds = task.build(freqs, rng, licked=np.array([e["licked"] for e in events]))
-    os_, oe = per["outcome"]
-    x[os_:oe, :, 2] = 0.0
-    for b, e in enumerate(events):  # reward input = what the mouse actually got
+    x[:, :, 2] = 0.0
+    reward_steps = [reward_steps_of(e, task, session.fs) for e in events]
+    for b, (e, (qs, qe)) in enumerate(zip(events, reward_steps)):  # reward input = what the mouse actually got
         if e["rewarded"]:
-            x[os_:oe, b, 2] = 1.0
+            x[qs:qe, b, 2] = 1.0
     frame_steps = np.round(np.arange(act.shape[1]) * 1000.0 / session.fs / cfg.dt).astype(int)
     frame_steps = np.minimum(frame_steps, task.T - 1)
     licked = np.array([e["licked"] for e in events])
     return {"x": torch.from_numpy(x), "act": torch.from_numpy(act), "licked": torch.from_numpy(licked),
-            "frame_steps": torch.from_numpy(frame_steps), "events": events, "conds": conds}
+            "frame_steps": torch.from_numpy(frame_steps), "events": events, "conds": conds,
+            "reward_steps": reward_steps}
+
+
+def reward_steps_of(event: dict, task: VagalOptoTask, fs: float) -> tuple[int, int]:
+    """Model steps with the reward input on for one recorded trial. With a valve frame
+    in the events, reward starts there and lasts `reward_ms`; otherwise the task's
+    reward window is used."""
+    cfg = task.cfg
+    if event.get("reward_frame") is None:
+        return reward_window(cfg, task.periods, task.T)
+    lag_ms = (event["reward_frame"] - event["stim_onset_frame"]) * 1000.0 / fs
+    s = task.periods["stimulus"][0] + int(round(lag_ms / cfg.dt))
+    s = int(np.clip(s, 0, task.T))
+    return s, min(task.T, s + int(round(cfg.reward_ms / cfg.dt)))
 
 
 def r2_scores(pred: np.ndarray, data: np.ndarray, groups: list) -> dict:
@@ -179,8 +194,12 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
     cond_list = sorted({cond_key[i] for i in train_idx})
     quiet = VagalOptoTask(VagalTaskConfig(**{**asdict(cfg.task), "input_noise": 0.0, "gain_cv": 0.0}))
     xc, _, _, _ = quiet.build([c[0] for c in cond_list], rng, licked=np.array([c[1] for c in cond_list]))
-    os_, oe = task.periods["outcome"]
-    xc[os_:oe, :, 2] = np.array([float(c[2]) for c in cond_list])[None, :]
+    xc[:, :, 2] = 0.0
+    for j, c in enumerate(cond_list):  # reward at the condition's median valve time
+        if c[2]:
+            win = np.array([data["reward_steps"][i] for i in train_idx if cond_key[i] == c])
+            qs, qe = (int(v) for v in np.median(win, axis=0))
+            xc[qs:qe, j, 2] = 1.0
     xc = torch.from_numpy(xc)
     yc = torch.stack([data["act"][[i for i in train_idx if cond_key[i] == c]].mean(0) for c in cond_list])
     wc = torch.tensor([sum(cond_key[i] == c for i in train_idx) for c in cond_list], dtype=torch.float32)

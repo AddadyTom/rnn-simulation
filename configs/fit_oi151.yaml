@@ -1,0 +1,34 @@
+# Data-constrained fit of mouse OI151, 26 Aug 2024 (plan step 5).
+# First convert the lab's export:
+#   python -m rnn_workbench convert-lab "/path/to/RNN Data" data/oi151
+name: fit_oi151
+session_dir: data/oi151
+events_file: events.csv
+signal: dff_ready                 # the lab's dF/F (576 curated neurons)
+target: psth                      # condition averages: hit, CR, FA, miss
+fs: 15.0
+smooth_frames: 1.0
+seeds: [0, 1, 2]
+task:
+  name: VagalOptoDetection
+  dt: 20
+  timing: {baseline: 1000, stimulus: 4000, delay: 0, odor: 2000, response: 2000, outcome: 1000}
+  contingency: no_reward
+  opsin_tau: 150
+  gain_cv: 0.0
+  input_noise: 0.1
+  response_weight: 5.0
+  odor_weight: 1.0
+  reward_ms: 1000                 # reward starts at each trial's valve frame (events.csv reward_frame)
+n_hidden_exc: 150
+n_inh: 0                          # 0 = 20% of the network
+recorded_inh_fraction: 0.0
+tau: 100
+noise_std: 0.02
+steps: 3000
+batch_size: 16
+lr: 0.01
+behavior_weight: 0.02             # step 6 sweeps this
+test_fraction: 0.2
+eval_every: 100
+out_dir: runs

@@ -198,3 +198,57 @@ def test_mock_events_layout(tmp_path):
         assert lo >= 0 and hi < 4000 and not (lo < 2000 <= hi)  # never crosses the run boundary
         assert e["rewarded"] == int(e["licked"] and e["freq_hz"] == 0)
     assert {"inhibition"} <= set(ev[0])
+
+
+# -- the lab's rig timing (OI151) and export format ---------------------------------------
+
+RIG = dict(timing={"baseline": 1000, "stimulus": 4000, "delay": 0, "odor": 2000, "response": 2000, "outcome": 1000},
+           reward_delay=200, reward_ms=1000, input_noise=0, gain_cv=0)
+
+
+def test_rig_timing_odor_lick_and_reward_windows():
+    task = VagalOptoTask(VagalTaskConfig(**RIG))
+    per = task.periods
+    assert per["odor"] == (250, 350) and per["response"] == (350, 450) and task.T == 500
+    assert per["inhibition"] == (0, 250)  # 1 s before the stimulus to odor onset
+    x, y, w, conds = task.build([0.0, 15.0], np.random.default_rng(0))
+    assert (x[250:350, :, 1] == 1).all() and x[350:, :, 1].sum() == 0  # odor only in the odor period
+    assert (y[250:450, 0] == 1).all() and y[:250, 0].sum() == 0 and y[:, 1].sum() == 0
+    assert x[360:410, 0, 2].min() == 1 and x[:360, 0, 2].max() == 0 and x[410:, 0, 2].max() == 0
+    assert x[:, 1, 2].max() == 0  # no reward on the no-go trial
+    assert (w[350:450] == 5).all() and (w[250:350] == 1).all()
+
+
+def test_default_timing_unchanged():
+    task = VagalOptoTask(VagalTaskConfig())
+    assert task.periods["odor"][0] == task.periods["odor"][1] == task.periods["response"][0]
+    x, y, _, _ = task.build([0.0], np.random.default_rng(0))
+    rs, re = task.periods["response"]
+    assert (x[rs:re, 0, 1] == 1).all() and (y[rs:re, 0] == 1).all() and y[:rs, 0].sum() == 0
+
+
+def test_convert_lab_session_and_fit(tmp_path):
+    from rnn_workbench.data import load_events
+    from rnn_workbench.fit import build_trials
+    from rnn_workbench.lab_format import convert_session, write_fake_lab_session
+    src, out = tmp_path / "lab", tmp_path / "sess"
+    write_fake_lab_session(src)
+    info = convert_session(src, out, dff_file="dff.npy")
+    assert info["problems"] == [] and info["outcomes"] == {"hit": 6, "miss": 0, "cr": 5, "fa": 1}
+    ev = load_events(out / "events.csv")
+    hit = next(e for e in ev if e["outcome"] == "hit")
+    assert hit["licked"] == hit["rewarded"] == 1 and hit["reward_frame"] - hit["stim_onset_frame"] == 108 - 15
+    assert all(e["freq_hz"] == 15.0 for e in ev if e["outcome"] in ("cr", "fa"))
+    s = load_session(out, signal="dff_ready")
+    assert s.traces.shape == (12, 4000)
+    task = VagalOptoTask(VagalTaskConfig(**RIG))
+    d = build_trials(s, task, np.random.default_rng(0), include_inhibition=False)
+    b = next(i for i, e in enumerate(d["events"]) if e["outcome"] == "hit")
+    on = np.flatnonzero(d["x"][:, b, 2].numpy() > 0)
+    assert on[0] == 50 + round(93 / 15 * 1000 / 20) and len(on) == 50  # reward at the valve frame, 1 s long
+    fa = next(i for i, e in enumerate(d["events"]) if e["outcome"] == "fa")
+    assert d["x"][:, fa, 2].max() == 0
+    cfg = FitConfig(name="lab", session_dir=str(out), signal="dff_ready", task=VagalTaskConfig(**RIG), steps=2,
+                    eval_every=2, n_hidden_exc=4, out_dir=str(tmp_path / "runs"))
+    root = fit(cfg, log=lambda *_: None)
+    assert (root / "seed_0" / "fit.json").exists()

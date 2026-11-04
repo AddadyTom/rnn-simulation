@@ -22,6 +22,12 @@ events.csv columns (required):
 optional:
     inhibition         0/1, insula opto-inhibition on this trial (excluded by default)
     contingency        "no_reward" | "reward"
+    reward_frame       int, frame when the reward valve opened (blank if no reward);
+                       sets the reward input at the real time instead of the task's window
+    outcome            hit | miss | cr | fa (kept for analyses)
+
+The lab's own export format (per-trial pickles plus dF/F) is converted by
+lab_format.convert_session; the resulting session uses signal "dff_ready".
 """
 
 from __future__ import annotations
@@ -55,9 +61,11 @@ def load_events(path: Path) -> list[dict]:
                 "freq_hz": float(r["freq_hz"]), "odor_onset_frame": int(r["odor_onset_frame"]),
                 "licked": int(float(r["licked"])), "rewarded": int(float(r["rewarded"])),
             }
-            for k in ("inhibition",):
-                if r.get(k, "") != "":
+            for k in ("inhibition", "reward_frame"):
+                if r.get(k, "") not in ("", None):
                     ev[k] = int(float(r[k]))
+            if r.get("outcome"):
+                ev["outcome"] = r["outcome"]
             if r.get("contingency"):
                 ev["contingency"] = r["contingency"]
             rows.append(ev)
@@ -82,6 +90,9 @@ def preprocess(raw: np.ndarray, signal: str, fneu: np.ndarray | None = None, smo
                    `scale_pct` percentile.
     signal="dff":  (F - neucoeff * Fneu), dF/F against the `baseline_pct` percentile,
                    clipped at 0 and scaled the same way.
+    signal="dff_ready": dF/F computed by the lab (dff.npy), smoothed and divided by the
+                   `scale_pct` percentile, not clipped (dF/F dips below 0 are real and
+                   the per-cell readout has an offset).
     """
     x = raw.astype(np.float64)
     if signal == "dff":
@@ -89,6 +100,10 @@ def preprocess(raw: np.ndarray, signal: str, fneu: np.ndarray | None = None, smo
             x = x - neucoeff * fneu
         f0 = np.percentile(x, baseline_pct, axis=1, keepdims=True)
         x = (x - f0) / np.maximum(np.abs(f0), 1e-6)
+    elif signal == "dff_ready":
+        x = _smooth(x, smooth_frames)
+        scale = np.percentile(x, scale_pct, axis=1, keepdims=True)
+        return (x / np.maximum(scale, 1e-9)).astype(np.float32)
     elif signal != "spks":
         raise ValueError(f"unknown signal {signal!r}")
     x = _smooth(np.maximum(x, 0.0), smooth_frames)
@@ -99,6 +114,10 @@ def preprocess(raw: np.ndarray, signal: str, fneu: np.ndarray | None = None, smo
 def load_session(session_dir: Path, events_file: str = "events.csv", iscell_file: str = "iscell_final.npy",
                  signal: str = "spks", fs: float = 15.0, smooth_frames: float = 1.0) -> SessionData:
     d = Path(session_dir)
+    if signal == "dff_ready":  # lab-computed dF/F of curated cells (lab_format.convert_session)
+        raw = np.load(d / "dff.npy", mmap_mode="r", allow_pickle=False)
+        traces = preprocess(raw, "dff_ready", smooth_frames=smooth_frames)
+        return SessionData(traces=traces, cell_ids=np.arange(raw.shape[0]), fs=fs, events=load_events(d / events_file))
     iscell = np.load(d / iscell_file, allow_pickle=False)
     cells = np.flatnonzero(iscell[:, 0] > 0.5)
     if signal == "spks":

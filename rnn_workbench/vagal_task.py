@@ -19,23 +19,29 @@ Inputs to the network (all non-negative, one column each):
     0  vagal   afferent drive: the pulse train filtered by an exponential kernel
                (opsin + afferent summation), normalised so 15 Hz gives a mean of 1,
                times a per-trial gain (light absorption varies) plus white noise
-    1  odor    1 during the response window, 0 otherwise
-    2  reward  1 during the outcome period on trials where the network licked and the
-               contingency rewards licking (closed loop at evaluation; assumed correct
-               during training)
+    1  odor    1 during the odor period (or, when that period has length 0, during
+               the response window), 0 otherwise
+    2  reward  1 on trials where the network licked and the contingency rewards
+               licking (closed loop at evaluation; assumed correct during training).
+               By default it is on for the whole outcome period. With `reward_delay`
+               set, it starts that many ms into the response window and lasts
+               `reward_ms` (the valve opens on the first lick in the window).
 
 The masking red light is on in every trial, so it carries no information and has no
 input channel.
 
 Output: two classes per time step, 0 = no lick, 1 = lick. The training target is
-"lick" during the response window on go trials and "no lick" everywhere else (mice
-do not lick during the stimulus). The choice on a trial is "lick" when the mean lick
+"lick" during the odor and response periods on go trials and "no lick" everywhere
+else (mice do not lick during the stimulus). Odor steps have weight `odor_weight`,
+response steps `response_weight`. The choice on a trial is "lick" when the mean lick
 probability over the response window exceeds 0.5.
 
-Trial timing (ms, configurable):  baseline 1000 | stimulus 4000 | delay 0 | response
-1500 | outcome 1000. A 5 s inhibition window "1 s before the stimulus to the odor", as
-in the paper's stGtACR2 experiment, is the window [0, 5000] with these defaults
-(period name "inhibition").
+Trial timing (ms, configurable):  baseline 1000 | stimulus 4000 | delay 0 | odor 0 |
+response 1500 | outcome 1000. The lab's recorded sessions (e.g. OI151) use odor 2000
+and response 2000 instead: light at 0 s, opto 1-5 s, odor 5-7 s, reward window 7-9 s
+(configs/train_vagal_oi151.yaml). A 5 s inhibition window "1 s before the stimulus to
+the odor", as in the paper's stGtACR2 experiment, is the window from 1 s before the
+stimulus to odor onset (period name "inhibition").
 """
 
 from __future__ import annotations
@@ -47,7 +53,7 @@ import torch
 
 from .tasks import TrialBatch
 
-PERIODS = ("baseline", "stimulus", "delay", "response", "outcome")
+PERIODS = ("baseline", "stimulus", "delay", "odor", "response", "outcome")
 INPUTS = ("vagal", "odor", "reward")
 F_REF = 15.0  # Hz; the trained frequency, drive normalised to mean 1 here
 
@@ -68,6 +74,9 @@ class VagalTaskConfig:
     gain_cv: float = 0.3  # per-trial lognormal gain on the vagal drive
     input_noise: float = 0.5  # white noise on the vagal channel, per sqrt(step) at dt=20 ms
     response_weight: float = 5.0  # loss weight of response-window steps relative to others
+    odor_weight: float = 1.0  # loss weight of odor-period steps (licking is allowed but optional there)
+    reward_delay: float | None = None  # ms into the response window when reward starts; None = outcome period
+    reward_ms: float = 1000.0  # reward input duration when reward_delay is set
     kwargs: dict = field(default_factory=dict)  # unused; keeps the TaskConfig shape
 
 
@@ -78,8 +87,22 @@ def steps_per_period(cfg: VagalTaskConfig) -> dict[str, tuple[int, int]]:
         out[p] = (t, t + n)
         t += n
     s_inh = max(0, out["stimulus"][0] - int(round(1000 / cfg.dt)))
-    out["inhibition"] = (s_inh, out["response"][0])
+    odor_start = out["odor"][0] if out["odor"][1] > out["odor"][0] else out["response"][0]
+    out["inhibition"] = (s_inh, odor_start)
     return out
+
+
+def odor_window(per: dict) -> tuple[int, int]:
+    """Steps with the odor input on: the odor period, or the response window if there is none."""
+    return per["odor"] if per["odor"][1] > per["odor"][0] else per["response"]
+
+
+def reward_window(cfg: VagalTaskConfig, per: dict, T: int) -> tuple[int, int]:
+    """Steps with the reward input on, for a rewarded trial."""
+    if cfg.reward_delay is None:
+        return per["outcome"]
+    s = per["response"][0] + int(round(cfg.reward_delay / cfg.dt))
+    return min(s, T), min(s + int(round(cfg.reward_ms / cfg.dt)), T)
 
 
 def n_steps(cfg: VagalTaskConfig) -> int:
@@ -156,7 +179,10 @@ class VagalOptoTask:
         y = np.zeros((T, B), dtype=np.int64)
         w = np.ones((T, B), dtype=np.float32)
         rs, re = per["response"]
-        os_, oe = per["outcome"]
+        ds, de = per["odor"]
+        os_, oe = odor_window(per)
+        qs, qe = reward_window(cfg, per, T)
+        w[ds:de] = cfg.odor_weight
         w[rs:re] = cfg.response_weight
         noise_scale = cfg.input_noise * (20.0 / cfg.dt) ** 0.5
         conds = []
@@ -166,12 +192,12 @@ class VagalOptoTask:
             gain = rng.lognormal(-0.5 * np.log1p(cfg.gain_cv**2), np.sqrt(np.log1p(cfg.gain_cv**2))) if cfg.gain_cv > 0 else 1.0
             drive = gain * drive_trace(f, cfg, T)
             x[:, b, 0] = np.maximum(drive + noise_scale * rng.standard_normal(T) * (noise_scale > 0), 0.0)
-            x[rs:re, b, 1] = 1.0
+            x[os_:oe, b, 1] = 1.0
             lick = go if licked is None else bool(licked[b])
             if lick and go:
-                x[os_:oe, b, 2] = 1.0
+                x[qs:qe, b, 2] = 1.0
             if go:
-                y[rs:re, b] = 1
+                y[ds:re, b] = 1
             conds.append({"freq": float(f), "stim": bool(stim), "go": bool(go), "ground_truth": int(stim),
                           "gain": float(gain)})
         return x, y, w, conds
@@ -200,18 +226,20 @@ class VagalOptoTask:
 
     def run(self, model, batch: TrialBatch, silence=None, current=None, noise=True):
         """Closed loop: run to get the choice, then set the reward input from the
-        network's own licks and run again. Reward arrives after the response window,
-        so the choice is unchanged by the second pass when the noise is reseeded."""
+        network's own licks and run again. The choice is taken from the first pass.
+        With the default timing reward arrives after the response window, so the
+        second pass gives the same choice when the noise is reseeded; with
+        `reward_delay` set, reward lands inside the window and only later steps change."""
         state = torch.random.get_rng_state()
         with torch.no_grad():
             out, _ = model(batch.inputs, silence=silence, current=current, noise=noise)
         licked = self.choices(out, batch)
         x = batch.inputs.clone()
-        os_, oe = batch.periods["outcome"]
-        x[os_:oe, :, 2] = 0.0
+        qs, qe = reward_window(self.cfg, batch.periods, x.shape[0])
+        x[:, :, 2] = 0.0
         for b, c in enumerate(batch.conditions):
             if licked[b] and c["go"]:
-                x[os_:oe, b, 2] = 1.0
+                x[qs:qe, b, 2] = 1.0
         torch.random.set_rng_state(state)
         with torch.no_grad():
             out, rates = model(x, silence=silence, current=current, noise=noise)

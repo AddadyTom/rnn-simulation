@@ -28,6 +28,9 @@ python -m rnn_workbench train configs/train_vagal_psychophysics.yaml   # continu
 python -m rnn_workbench train configs/train_vagal_reversal.yaml        # reversal to VagalOpto->Reward, with checkpoints
 python -m rnn_workbench experiment configs/exp_vagal_inhibition.yaml   # partial E inhibition, drug-like silencing
 python -m rnn_workbench fit configs/fit_ss38.yaml                      # data-constrained fit to a suite2p session
+python -m rnn_workbench convert-lab "RNN Data" data/oi151              # the lab's per-trial export -> session folder
+python -m rnn_workbench train configs/train_vagal_oi151.yaml           # task-only control with the rig's timing
+python -m rnn_workbench fit configs/fit_oi151.yaml                     # fit mouse OI151 (576 neurons, 180 trials)
 ```
 
 The fit needs the session's suite2p output plus an `events.csv`, one row per trial
@@ -42,6 +45,7 @@ session in the same format for testing.
 | `tasks.py` | NeuroGym task wrappers; controlled evaluation trials; accuracy and psychometric curves; the task adapter interface |
 | `vagal_task.py` | The interoceptive detection and psychophysics task: vagal pulse-train input, odor, closed-loop reward; paper-style metrics (correct rejections, hits, d′, threshold) |
 | `data.py` | suite2p session loader, `events.csv` format, trial alignment, synthetic sessions |
+| `lab_format.py` | Converts the lab's export (dF/F pickle, per-trial event lists) into a session folder, with consistency checks |
 | `fit.py` | Data-constrained training: recorded cells mapped to E units, held-out R², output perturbable like any ensemble |
 | `analysis.py` | Sigmoid vs Gaussian tuning, choice probability, SVM decoding and neurometric curves, for model units or recorded cells |
 | `train.py` | Trains one network per seed (BPTT, Adam, rate and weight L2) and saves checkpoints |
