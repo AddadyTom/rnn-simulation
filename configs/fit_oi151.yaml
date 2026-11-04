@@ -28,7 +28,7 @@ noise_std: 0.02
 steps: 3000
 batch_size: 16
 lr: 0.001
-behavior_weight: 0.1             # step 6 sweeps this
+behavior_weight: 0.1             # chosen by the step 6 sweep (0.02-0.3 similar, 1.0 worse)
 test_fraction: 0.2
 eval_every: 100
 out_dir: runs
