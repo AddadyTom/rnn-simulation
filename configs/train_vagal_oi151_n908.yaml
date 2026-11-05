@@ -3,7 +3,7 @@
 # light 0 s | opto 1-5 s (15 Hz, no-go trials) | odor 5-7 s | reward window 7-9 s
 # (valve at the first lick, about 7.2 s) | 1 s after.
 name: vagal_oi151_n908
-seeds: [0, 1, 2, 3]
+seeds: [0, 1, 2]
 task:
   name: VagalOptoDetection
   dt: 20
