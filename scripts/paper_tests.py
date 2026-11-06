@@ -119,4 +119,4 @@ for sd in sorted(run_dir.glob("seed_*")):
         float(np.median(sd_model / np.maximum(sd_data, 1e-9))), 3)
 
 print(json.dumps(res, indent=1))
-(ROOT / "runs" / "paper_tests.json").write_text(json.dumps(res, indent=1))
+(ROOT / "runs" / f"paper_tests_{run_dir.name}.json").write_text(json.dumps(res, indent=1))
