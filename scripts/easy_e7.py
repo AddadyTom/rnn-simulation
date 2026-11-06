@@ -41,10 +41,14 @@ win = lambda a, b: slice(int(round(a * fs)), int(round(b * fs)))
 
 
 def run(model_dir, seed, contingency, n=80):
+    return run_model(load_model(model_dir / f"seed_{seed}"), seed, contingency, n)
+
+
+def run_model(m, seed, contingency, n=80):
+    """m: a network (or a wrapper with the same call signature)."""
     tc = VagalTaskConfig(**{**asdict(cfg.task), "contingency": contingency, "reward_delay": 200})
     task = VagalOptoTask(tc)
     ck = torch.load(BEFORE / f"seed_{seed}" / "model.pt", weights_only=False)
-    m = load_model(model_dir / f"seed_{seed}")
     ro = F.Readout(act.shape[2], cfg.calcium_tau_ms or 1000, dt, False)
     ro.load_state_dict(ck["readout"], strict=False)
     torch.manual_seed(seed)
@@ -75,9 +79,10 @@ def run(model_dir, seed, contingency, n=80):
             "reward_excited": round(lab_rew["excited"], 3), "reward_suppressed": round(lab_rew["suppressed"], 3)}
 
 
-res = {}
-for s in (0, 1, 2):
+if __name__ == "__main__":
+  res = {}
+  for s in (0, 1, 2):
     res[f"seed {s}"] = {"before (light = no water)": run(BEFORE, s, "no_reward"),
                         "after (light = water)": run(AFTER, s, "reward")}
     print(s, res[f"seed {s}"], flush=True)
-(ROOT / "runs" / "easy_e7.json").write_text(json.dumps(res, indent=1))
+  (ROOT / "runs" / "easy_e7.json").write_text(json.dumps(res, indent=1))
