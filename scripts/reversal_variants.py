@@ -5,6 +5,7 @@ trials, lr 1e-4):
   anchor     + a loss keeping the 576 cell-copying units' average light-window response
                on light trials equal to the pre-reversal network's (which was fitted to
                the OI151 cells)
+  anchor_all the same, but on light and no-light trials, each averaged separately
   rate_l2    activity penalty 1e-3 instead of 1e-4
   new_odor   the reversed rule uses a second, new odor input, as the mice got a new odor
 Then the E7 test (scripts/easy_e7.py) on each. Usage: python scripts/reversal_variants.py VARIANT
@@ -21,7 +22,7 @@ from rnn_workbench.train import load_model, _save
 from rnn_workbench.vagal_task import VagalOptoTask, VagalTaskConfig
 
 variant = sys.argv[1]
-assert variant in ("anchor", "rate_l2", "new_odor")
+assert variant in ("anchor", "anchor_all", "rate_l2", "new_odor")
 STEPS, BATCH, LR = 600, 32, 1e-4
 RATE_L2 = 1e-3 if variant == "rate_l2" else 1e-4
 ANCHOR_W = 10.0
@@ -65,13 +66,14 @@ for seed in (0, 1, 2):
         out, rates = net(x)
         ce = F.cross_entropy(out.reshape(-1, 2), y.reshape(-1), reduction="none")
         loss = (ce * w.reshape(-1)).sum() / w.sum() + RATE_L2 * rates.pow(2).mean() + 1e-5 * m.w_rec.pow(2).sum()
-        if variant == "anchor":
+        if variant.startswith("anchor"):
             light = x[on:off, :, 0].sum(0) > 0
             with torch.no_grad():
                 _, r0 = ref(x)
-            a = rates[on:off][:, light][:, :, units].mean(1)
-            b = r0[on:off][:, light][:, :, units].mean(1)
-            loss = loss + ANCHOR_W * (a - b).pow(2).mean()
+            for grp in ([light, ~light] if variant == "anchor_all" else [light]):
+                a = rates[on:off][:, grp][:, :, units].mean(1)
+                b = r0[on:off][:, grp][:, :, units].mean(1)
+                loss = loss + ANCHOR_W * (a - b).pow(2).mean()
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step()
         if step % 50 == 0:
