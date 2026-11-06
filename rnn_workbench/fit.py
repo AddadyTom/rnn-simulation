@@ -43,7 +43,11 @@ class FitConfig:
     events_file: str = "events.csv"
     iscell_file: str = "iscell_final.npy"
     signal: str = "spks"  # "spks" (deconvolved), "dff", "dff_ready" (lab dF/F) or "dff_deconv" (lab dF/F + OASIS)
-    target: str = "psth"  # "psth": fit condition averages (frequency x lick x reward); "single_trial"
+    target: str = "psth"  # "psth": fit condition averages (frequency x lick x reward); "single_trial";
+    # "closed_loop": light trials are run many times with noise and the network's own lick
+    # choice sorts them into its CR and FA trials, which are fitted to the mouse's CR and FA
+    # averages, and its FA rate to the mouse's (see closed_loop_reps)
+    closed_loop_reps: int = 32  # noisy copies of the light trial per step (closed_loop only)
     fs: float = 15.0
     smooth_frames: float = 1.0
     include_inhibition_trials: bool = False
@@ -70,6 +74,7 @@ class FitConfig:
     calcium_tau_ms: float = 0.0  # > 0: slow each fitted unit's rate with this calcium decay before comparing (way B)
     learn_calcium_tau: bool = True  # learn one decay per cell, starting at calcium_tau_ms
     out_dir: str = "runs"
+    init_from: str = ""  # fit directory to start each seed from (same seed, same cells); noise_std comes from this config
 
 
 def load_fit_config(d: dict) -> FitConfig:
@@ -206,6 +211,11 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
     model = EIRNN(mcfg)
     assert model.n_exc == n_exc, "rounding of frac_exc changed the E/I split"
     readout = Readout(n_rec, cfg.calcium_tau_ms, cfg.task.dt, cfg.learn_calcium_tau)
+    if cfg.init_from:
+        ck = torch.load(Path(cfg.init_from) / f"seed_{seed}" / "model.pt", weights_only=False)
+        model.load_state_dict(ck["state_dict"])
+        readout.load_state_dict(ck["readout"], strict=False)
+        unit_of_cell = np.asarray(ck["unit_of_cell"])
     params = list(model.parameters()) + list(readout.parameters())
     # Adam moves every weight by about lr per step, and in a network of N units the
     # moves add up over N inputs. Scaling the recurrent weights' step by 100 / N keeps
@@ -258,6 +268,26 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
         pred = readout(rates[:, :, units], fs_steps).transpose(0, 1)
         return pred, out[rs:re].mean(0), rates
 
+    if cfg.target == "closed_loop":
+        # Light conditions (CR and FA share one input) get closed_loop_reps noisy copies;
+        # each no-light condition gets a quarter as many.
+        light_j = [j for j, c in enumerate(cond_list) if c[0] > 0]
+        if len({cond_list[j][0] for j in light_j}) != 1:
+            raise ValueError("closed_loop expects one light frequency")
+        keep = [light_j[0]] + [j for j, c in enumerate(cond_list) if c[0] == 0]
+        reps = {j: (cfg.closed_loop_reps if j in light_j else max(1, cfg.closed_loop_reps // 4)) for j in keep}
+        rep_of = torch.tensor([j for j in keep for _ in range(reps[j])])
+        xr = xc[:, rep_of]
+        by = {bool(cond_list[j][1]): j for j in light_j}
+        y_light = {k: yc[j] for k, j in by.items()}
+        w_fa = float(wc[by[True]]) if True in by else 0.0
+        w_cr = float(wc[by[False]]) if False in by else 0.0
+        fa_rate = torch.tensor(w_fa / max(w_fa + w_cr, 1.0))
+        wc = wc.clone()
+        for j in light_j[1:]:
+            wc[light_j[0]] += wc[j]
+            wc[j] = 0.0
+
     history, t0 = [], time.time()
     for step in range(1, cfg.steps + 1):
         if cfg.target == "psth":
@@ -265,6 +295,28 @@ def fit_one(cfg: FitConfig, session: SessionData, seed: int, out_dir: Path, log=
             per = ((pred - yc) ** 2).mean((1, 2))
             loss_act = (per * wc).sum() / wc.sum()
             loss_beh = (F.cross_entropy(lick_logit, lc, reduction="none") * wc).sum() / wc.sum()
+        elif cfg.target == "closed_loop":
+            pred, lick_logit, rates = forward_x(xr)
+            p = torch.softmax(lick_logit, -1)[:, 1]
+            loss_act, loss_beh = 0.0, 0.0
+            for j, c in enumerate(cond_list):
+                m = rep_of == j
+                if not m.any():
+                    continue
+                if c[0] > 0:  # light: soft-split the copies by the network's own choice
+                    for licked_, wj in ((True, w_fa), (False, w_cr)):
+                        q = p[m] if licked_ else 1 - p[m]
+                        mean = (q[:, None, None] * pred[m]).sum(0) / q.sum().clamp_min(1e-6)
+                        loss_act = loss_act + wj * ((mean - y_light[licked_]) ** 2).mean()
+                    # The FA rate must come from some copies licking, not from every copy
+                    # being a little unsure: each copy is also pushed toward its own choice.
+                    own = (p[m] > 0.5).long().detach()
+                    loss_beh = loss_beh + wc[j] * (F.binary_cross_entropy(p[m].mean(), fa_rate)
+                                                   + F.cross_entropy(lick_logit[m], own))
+                else:
+                    loss_act = loss_act + wc[j] * ((pred[m].mean(0) - yc[j]) ** 2).mean()
+                    loss_beh = loss_beh + wc[j] * F.cross_entropy(lick_logit[m], lc[j].expand(int(m.sum())))
+            loss_act, loss_beh = loss_act / wc.sum(), loss_beh / wc.sum()
         elif cfg.target == "single_trial":
             idx = rng.choice(train_idx, size=min(cfg.batch_size, len(train_idx)), replace=False)
             pred, lick_logit, rates = forward(idx)

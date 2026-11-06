@@ -1,0 +1,40 @@
+# Easy-task plan, step 1 refit: the fitted one-area model with internal noise large enough
+# to make its own false alarms, and a closed-loop fit: the network's own lick choice on
+# noisy copies of the light trial sorts them into its CR and FA trials, which are fitted
+# to the mouse's CR and FA averages, and its FA rate to the mouse's.
+# Same as fit_oi151.yaml otherwise.
+name: fit_oi151_closed_loop
+session_dir: data/oi151
+events_file: events.csv
+signal: dff_ready
+target: closed_loop
+closed_loop_reps: 32
+fs: 15.0
+smooth_frames: 1.0
+seeds: [0, 1, 2]
+task:
+  name: VagalOptoDetection
+  dt: 20
+  timing: {baseline: 1000, stimulus: 4000, delay: 0, odor: 2000, response: 2000, outcome: 1000}
+  contingency: no_reward
+  opsin_tau: 150
+  gain_cv: 0.0
+  input_noise: 0.1
+  response_weight: 5.0
+  odor_weight: 1.0
+  reward_ms: 1000
+  reward_delay: 200
+n_hidden_exc: 150
+n_inh: 0
+recorded_inh_fraction: 0.0
+tau: 100
+noise_std: 0.2
+steps: 3000
+batch_size: 16
+lr: 0.001
+behavior_weight: 0.1
+test_fraction: 0.2
+eval_every: 100
+out_dir: runs
+calcium_tau_ms: 1000
+learn_calcium_tau: false
