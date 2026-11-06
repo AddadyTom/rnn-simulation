@@ -5,6 +5,9 @@ rates (from `unit_responses`) and on imaging data (from data.trial_tensor).
 
     tuning_classes      sigmoidal vs Gaussian frequency tuning, with a shuffle test (Fig 2e-i)
     choice_probability  auROC of detected vs undetected trials at matched stimuli (Fig 3a-c)
+    choice_probability_paper  the paper's CP: bootstrap-matched CR vs FA, CR-CR null
+    event_responsive    the paper's excited / suppressed test: auROC of an event window vs
+                        baseline, 500 shuffles, 10th/90th percentiles, plus a control window
     decode_accuracy     cross-validated linear SVM (Fig 2k, Fig 3d)
     neurometric         population decoding of each frequency vs no stimulation (Fig 2k)
 """
@@ -166,6 +169,100 @@ def auroc(a: np.ndarray, b: np.ndarray) -> float:
     from scipy.stats import rankdata
     ranks = rankdata(np.concatenate([a, b]))
     return float((ranks[: len(a)].sum() - len(a) * (len(a) + 1) / 2) / (len(a) * len(b)))
+
+
+def _auroc_cols(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """auROC per column: a (n_a, units) vs b (n_b, units)."""
+    from scipy.stats import rankdata
+    na, nb = len(a), len(b)
+    ranks = rankdata(np.concatenate([a, b]), axis=0)
+    return (ranks[:na].sum(0) - na * (na + 1) / 2) / (na * nb)
+
+
+def _signif(obs: np.ndarray, null: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """+1 above the hi-th percentile of the null, -1 below the lo-th, else 0."""
+    up, dn = np.percentile(null, hi, axis=0), np.percentile(null, lo, axis=0)
+    return np.where(obs > up, 1, np.where(obs < dn, -1, 0))
+
+
+def event_responsive(event: np.ndarray, baseline: np.ndarray, control: np.ndarray | None = None,
+                     n_perm: int = 500, lo: float = 10, hi: float = 90, seed: int = 0) -> dict:
+    """The paper's single-cell response test (Methods, "Single-Neuron Response Classification").
+
+    event, baseline: (trials, units) mean activity of the same trials in the event window
+    and in the baseline window. control: (other trials, units) mean activity in the same
+    window as `event` but on trials without the event (the paper uses hit trials).
+
+    Step 1: auROC of event vs baseline. The null shuffles the two labels within each
+    trial 500 times. Above the 90th percentile of the null is "excited", below the 10th
+    is "suppressed". Step 2 (if control is given): the same test of event vs control,
+    shuffling trial labels; a unit keeps its label only if step 2 gives the same sign.
+    Returns auroc (units,), label (units,) in {+1 excited, -1 suppressed, 0 none} and
+    the excited and suppressed fractions.
+    """
+    event, baseline = np.asarray(event, float), np.asarray(baseline, float)
+    rng = np.random.default_rng(seed)
+    obs = _auroc_cols(event, baseline)
+    null = np.empty((n_perm, event.shape[1]))
+    for i in range(n_perm):
+        swap = rng.random(len(event)) < 0.5
+        e = np.where(swap[:, None], baseline, event)
+        b = np.where(swap[:, None], event, baseline)
+        null[i] = _auroc_cols(e, b)
+    label = _signif(obs, null, lo, hi)
+    out = {"auroc": obs}
+    if control is not None:
+        control = np.asarray(control, float)
+        obs_c = _auroc_cols(event, control)
+        pooled = np.concatenate([event, control])
+        null_c = np.empty((n_perm, event.shape[1]))
+        for i in range(n_perm):
+            perm = rng.permutation(len(pooled))
+            null_c[i] = _auroc_cols(pooled[perm[: len(event)]], pooled[perm[len(event):]])
+        label_c = _signif(obs_c, null_c, lo, hi)
+        label = np.where(label == label_c, label, 0)
+        out["auroc_control"] = obs_c
+    out["label"] = label
+    out["excited"] = float((label == 1).mean())
+    out["suppressed"] = float((label == -1).mean())
+    return out
+
+
+def choice_probability_paper(cr: np.ndarray, fa: np.ndarray, n_boot: int = 500, seed: int = 0,
+                             null_size: str = "half", n_inner: int = 50) -> dict:
+    """The paper's choice probability (Methods, "Choice Probability Analysis").
+
+    cr, fa: (trials, units) mean activity in the light window on correct-rejection and
+    false-alarm trials. CP per unit = median over n_boot draws of auROC(CR subsample of
+    len(fa) trials, all FA trials). Null: CR trials split at random into two groups
+    (null_size "half" = two equal halves, as written in the paper; "matched" = len(fa)
+    pseudo-FA trials scored against the other CR trials with the same median of
+    n_inner subsamples, so the null has the same trial counts as the real CP), for each
+    of n_boot splits, pooled over units. A unit counts if its CP is above the 95th
+    percentile of the null (CP >= 0.5) or below the 5th (CP < 0.5).
+    Trial-history balancing from the paper is not applied.
+    """
+    cr, fa = np.asarray(cr, float), np.asarray(fa, float)
+    rng = np.random.default_rng(seed)
+    nf = len(fa)
+    cp = np.median([_auroc_cols(cr[rng.choice(len(cr), nf, replace=False)], fa) for _ in range(n_boot)], 0)
+    null = []
+    for _ in range(n_boot):
+        perm = rng.permutation(len(cr))
+        if null_size == "half":
+            h = len(cr) // 2
+            a, b = cr[perm[:h]], cr[perm[h:2 * h]]
+            null.append(_auroc_cols(a, b))
+        else:  # pseudo-FA of len(fa) trials, scored exactly like the real CP
+            pseudo, pool = cr[perm[:nf]], cr[perm[nf:]]
+            null.append(np.median([_auroc_cols(pool[rng.choice(len(pool), nf, replace=False)], pseudo)
+                                   for _ in range(n_inner)], 0))
+    null = np.concatenate(null)
+    hi, lo = np.percentile(null, 95), np.percentile(null, 5)
+    pos, neg = (cp >= 0.5) & (cp > hi), (cp < 0.5) & (cp < lo)
+    return {"cp": cp, "threshold": (float(lo), float(hi)),
+            "fraction_cr_higher": float(pos.mean()), "fraction_fa_higher": float(neg.mean()),
+            "fraction_significant": float((pos | neg).mean())}
 
 
 def choice_probability(resp: np.ndarray, detected: np.ndarray, strata: np.ndarray | None = None,

@@ -154,6 +154,30 @@ def test_auroc():
     assert analysis.auroc([1, 1], [1, 1]) == 0.5
 
 
+def test_event_responsive_finds_excited_and_suppressed_units():
+    rng = np.random.default_rng(0)
+    n = 60
+    base = rng.normal(size=(n, 4))
+    ev = rng.normal(size=(n, 4))
+    ev[:, 0] += 1.5   # excited
+    ev[:, 1] -= 1.5   # suppressed
+    ctrl = rng.normal(size=(n, 4))
+    ctrl[:, 0] += 1.5  # unit 0 also rises without the event, so the control removes it
+    r = analysis.event_responsive(ev, base, n_perm=200)
+    assert list(r["label"][:2]) == [1, -1]
+    r = analysis.event_responsive(ev, base, control=ctrl, n_perm=200)
+    assert r["label"][0] == 0 and r["label"][1] == -1
+
+
+def test_choice_probability_paper_finds_planted_unit():
+    rng = np.random.default_rng(0)
+    cr, fa = rng.normal(size=(80, 50)), rng.normal(size=(10, 50))
+    cr[:, 0] += 2.0
+    r = analysis.choice_probability_paper(cr, fa, n_boot=100, null_size="matched")
+    assert r["cp"][0] > r["threshold"][1]
+    assert r["fraction_significant"] < 0.3
+
+
 def test_choice_probability_finds_planted_unit():
     rng = np.random.default_rng(0)
     n = 200
