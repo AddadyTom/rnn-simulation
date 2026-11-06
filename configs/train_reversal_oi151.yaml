@@ -1,0 +1,30 @@
+# Easy-task plan, step 3 (E7, Fig 1o-q): start from the noisy OI151 fit and keep training
+# with the rule flipped (VagalOpto->Reward: the light now means water). There are no
+# cells recorded under the reversed rule, so this is task training only; the units keep
+# their identities, so the share of light- and reward-responsive units can be compared
+# before and after (scripts/easy_e7.py).
+name: reversal_oi151
+init_from: runs/fit_oi151_noise15
+seeds: [0, 1, 2]
+task:
+  name: VagalOptoDetection
+  dt: 20
+  timing: {baseline: 1000, stimulus: 4000, delay: 0, odor: 2000, response: 2000, outcome: 1000}
+  contingency: reward
+  train_frequencies: [15.0]
+  eval_frequencies: [15.0]
+  p_stim: 0.5
+  opsin_tau: 150
+  gain_cv: 0.0
+  input_noise: 0.1
+  response_weight: 5.0
+  odor_weight: 1.0
+  reward_ms: 1000
+  reward_delay: 200
+steps: 600
+batch_size: 32
+lr: 0.0001            # small steps: the network has 908 units and starts from a fit
+rate_l2: 0.0001
+weight_l2: 0.00001
+eval_every: 50
+out_dir: runs

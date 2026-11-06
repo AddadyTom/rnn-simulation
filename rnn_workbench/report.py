@@ -74,19 +74,26 @@ def fig_psychometric(res: dict) -> str:
     names = [p["name"] for p in res["perturbations"]]
     fig, axs = _grid(len(names), 3, 3.4, 3.0, sharey=True)
     seeds = list(res["seeds"].values())
-    x = np.array(seeds[0]["intact"]["psychometric"]["signed_coh"])
-    intact = np.mean([s["intact"]["psychometric"]["p_choice_2"] for s in seeds], 0)
+    psy = seeds[0]["intact"]["psychometric"]
+    x = np.array(psy["x"])
+    xlabel, ylabel = psy.get("xlabel", ""), psy.get("ylabel", "")
+    logx = "frequency" in xlabel.lower()
+    if logx:
+        x = np.where(x > 0, x, x[x > 0].min() / 2)  # plot "no stimulus" left of the lowest frequency
+    intact = np.mean([s["intact"]["psychometric"]["y"] for s in seeds], 0)
     for ax, name in zip(axs, names):
-        pert = np.mean([s["perturbations"][name]["perturbed"]["psychometric"]["p_choice_2"] for s in seeds], 0)
-        ctrl = np.mean([s["perturbations"][name]["control"]["psychometric"]["p_choice_2"] for s in seeds], 0)
+        pert = np.mean([s["perturbations"][name]["perturbed"]["psychometric"]["y"] for s in seeds], 0)
+        ctrl = np.mean([s["perturbations"][name]["control"]["psychometric"]["y"] for s in seeds], 0)
         ax.plot(x, intact, color=BLUE, marker="o", markersize=4, label="Intact")
         ax.plot(x, ctrl, color=GRAY, marker="o", markersize=4, label="Random control")
         ax.plot(x, pert, color=ORANGE, marker="o", markersize=4, label="Targeted")
         ax.set_title(name, loc="left", color=INK)
-        ax.set_xlabel("Signed coherence (%)")
+        ax.set_xlabel(xlabel + (" (leftmost = none)" if logx else ""))
+        if logx:
+            ax.set_xscale("log")
         ax.set_ylim(-0.03, 1.03)
     for ax in axs[::3]:
-        ax.set_ylabel("P(choose right)")
+        ax.set_ylabel(ylabel)
     axs[0].legend(loc="upper left", fontsize=8)
     fig.tight_layout()
     return _png(fig)
@@ -108,7 +115,9 @@ def fig_rates(res: dict) -> str:
         for data, col, lab in ((intact, BLUE, "Intact"), (r, ORANGE, "Perturbed")):
             ax.plot(t, data[:, is_exc].mean(1), color=col, label=f"{lab}, E")
             ax.plot(t, data[:, ~is_exc].mean(1), color=col, linestyle="--", linewidth=1.5, label=f"{lab}, I")
-        for per in ("stimulus", "decision"):
+        for per in ("stimulus", "decision", "response"):
+            if per not in res["periods"]:
+                continue
             s0, e0 = res["periods"][per]
             ax.axvspan(s0 * dt, e0 * dt, color="#f1f0ed", zorder=0)
         ax.set_title(name, loc="left", color=INK)
@@ -125,7 +134,7 @@ def fig_pca(res: dict) -> str:
     pca = res["example"]["pca"]
     keys = pca["keys"]
     names = list(pca["proj"].keys())
-    cohs = sorted({k[1] for k in keys})
+    cohs = sorted({k[1] for k in keys}, key=lambda c: -1 if c is None else c)
     fig, axs = _grid(len(names), 4, 2.8, 2.8, sharex=True, sharey=True)
     for ax, name in zip(axs, names):
         proj = np.array(pca["proj"][name])  # (K, T, 2)
@@ -138,9 +147,29 @@ def fig_pca(res: dict) -> str:
         ax.set_xlabel(f"PC1 ({100 * pca['var_explained'][0]:.0f}% var.)")
     fig.tight_layout()
     axs[0].set_ylabel(f"PC2 ({100 * pca['var_explained'][1]:.0f}% var.)")
-    fig.text(0.01, -0.04, "Blue = right-choice trials, orange = left; darker = stronger evidence. Dots mark trial end.",
-             fontsize=8, color=INK2)
+    vagal = res["task"]["name"].startswith("VagalOpto")
+    legend = ("Blue = stimulation trials, orange = no stimulation; darker = higher frequency. Dots mark trial end."
+              if vagal else "Blue = right-choice trials, orange = left; darker = stronger evidence. Dots mark trial end.")
+    fig.text(0.01, -0.04, legend, fontsize=8, color=INK2)
     return _png(fig)
+
+
+def _metrics_table(res: dict) -> str:
+    rows = []
+    for p in res["perturbations"]:
+        for m, v in res["summary"][p["name"]].get("metrics", {}).items():
+            rows.append(
+                f"<tr><td>{html.escape(p['name'])}</td><td>{html.escape(m)}</td>"
+                f"<td>{100 * v['change_perturbed_mean']:+.1f} ± {100 * v['change_perturbed_sem']:.1f}</td>"
+                f"<td>{100 * v['change_control_mean']:+.1f} ± {100 * v['change_control_sem']:.1f}</td>"
+                f"<td>{v['p_vs_intact']:.3f}</td><td>{v['p_vs_control']:.3f}</td></tr>")
+    if not rows:
+        return ""
+    return ("<h2>Behavioral metrics</h2><div class='tablewrap'><table><thead><tr><th>Perturbation</th><th>Metric</th>"
+            "<th>Change, targeted (pp)</th><th>Change, control (pp)</th><th>p vs intact</th><th>p vs control</th>"
+            "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>"
+            "<p class='sub'>Change = perturbed − intact, in percentage points (for d′ and thresholds, ×100 of the raw unit). "
+            "p-values from exact sign-flip tests across networks.</p>")
 
 
 def _summary_table(res: dict) -> str:
@@ -211,7 +240,8 @@ def build_report(exp_dir: Path) -> Path:
 ({n_exc} E / {m['n_units'] - n_exc} I, Dale's law {'on' if m['dale'] else 'off'}) ·
 intact accuracy {100 * np.mean(base_acc):.1f}% (range {100 * min(base_acc):.1f}–{100 * max(base_acc):.1f}%)</p>
 <h2>Summary</h2><div class="tablewrap">{_summary_table(res)}</div>
-<p class="sub">Accuracy includes 0% coherence trials, where chance is 50%. Control = the same number of randomly chosen
+{_metrics_table(res)}
+<p class="sub">{"Accuracy includes 0% coherence trials, where chance is 50%. " if not res['task']['name'].startswith('VagalOpto') else "Accuracy includes very low frequencies that the networks are not expected to detect. "}Control = the same number of randomly chosen
 units (from the target's own population for selected targets, from the whole network for population targets),
 same window and kind, averaged over 10 random draws; random targets are also averaged over 10 draws. p-value from an exact sign-flip test on the
 per-network targeted − control differences.</p>

@@ -1,0 +1,33 @@
+# Virtual versions of the paper's insula inhibition experiments (Fig 3g-o).
+# Run on both ensembles (model_dir: runs/vagal_psychophysics, then runs/vagal_single)
+# to compare the hard and easy task, as the paper does.
+name: vagal_inhibition_psychophysics
+model_dir: runs/vagal_psychophysics
+trials_per_condition: 40
+out_dir: experiments
+metrics: [cr_rate, hit_rate, "p_report_stim:1.0", "p_report_stim:2.0", "p_report_stim:3.0", "p_report_stim:5.0", "p_report_stim:15.0"]
+perturbations:
+  # stGtACR2 in ~47% of excitatory neurons, light from 1 s before the stimulus until
+  # the odor (5 s). Partial, moderate inhibition (a negative current, not a clamp).
+  - name: opto_partial_E
+    kind: current
+    target: {population: E, fraction: 0.47}
+    window: inhibition
+    strength: -0.5
+  - name: opto_partial_E_strong
+    kind: current
+    target: {population: E, fraction: 0.47}
+    window: inhibition
+    strength: -2.0
+  # GABA agonists: nearly every neuron, E and I, strongly silenced. Restricted to the
+  # sensing window here because in a one-area model the lick readout comes from the
+  # same units (see docs/vagal_research_plan.md, question 6).
+  - name: drug_like_all_units
+    kind: silence
+    target: {population: all, fraction: 0.9}
+    window: inhibition
+  # The units most selective for stimulus presence (the model's "detector" cells).
+  - name: silence_top_stim_E
+    kind: silence
+    target: {population: E, count: 15, select: top_choice}
+    window: inhibition

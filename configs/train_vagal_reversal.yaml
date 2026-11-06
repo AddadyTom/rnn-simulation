@@ -1,0 +1,25 @@
+# Reversal (Fig 1o-q): start from the NoReward networks and retrain on
+# VagalOpto->Reward (stimulation now means "lick"). Checkpoints are saved along the
+# way, so the change in connectivity and tuning can be followed during relearning.
+name: vagal_reversal
+init_from: runs/vagal_single
+seeds: [0, 1, 2, 3, 4, 5, 6, 7]
+task:
+  name: VagalOptoDetection
+  dt: 20
+  timing: {baseline: 1000, stimulus: 4000, delay: 0, response: 1500, outcome: 1000}
+  contingency: reward
+  train_frequencies: [15.0]
+  eval_frequencies: [0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 15.0]
+  p_stim: 0.5
+  opsin_tau: 150
+  gain_cv: 0.3
+  input_noise: 0.5
+steps: 600
+batch_size: 32
+lr: 0.001
+rate_l2: 0.001
+weight_l2: 0.0001
+eval_every: 100
+save_every: 100
+out_dir: runs

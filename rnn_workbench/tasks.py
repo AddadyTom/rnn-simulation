@@ -111,7 +111,68 @@ def behavior_summary(choices: np.ndarray, batch: TrialBatch) -> dict:
             m = np.array([c["coh"] == coh for c in batch.conditions])
             acc_by_coh[float(coh)] = float(correct[m].mean())
         out.update(
-            psychometric={"signed_coh": levels.tolist(), "p_choice_2": p_right},
+            psychometric={"signed_coh": levels.tolist(), "p_choice_2": p_right,
+                          "x": levels.tolist(), "y": p_right,
+                          "xlabel": "Signed coherence (%)", "ylabel": "P(choose right)"},
             accuracy_by_coh=acc_by_coh,
         )
     return out
+
+
+# -- task adapters ---------------------------------------------------------------------
+# train.py and experiment.py talk to tasks through this small interface:
+#   dims() -> (n_inputs, n_outputs)
+#   sample_batch(batch_size, rng) -> inputs (T, B, n_in), targets (T, B), loss weights (T, B)
+#   eval_batch(n_per_condition, seed) -> TrialBatch
+#   run(model, batch, silence=None, current=None) -> outputs, rates
+#   behavior(outputs, batch) -> dict with at least "accuracy"
+#   condition_key(condition) -> hashable (choice side or stimulus, strength)
+
+
+class NeuroGymTask:
+    def __init__(self, cfg: TaskConfig):
+        self.cfg = cfg
+        self._ds = None
+
+    def dims(self):
+        return task_dims(self.cfg)
+
+    def sample_batch(self, batch_size: int, rng: np.random.Generator, seq_len: int = 100):
+        if self._ds is None:
+            self._ds = make_dataset(self.cfg, batch_size, seq_len, int(rng.integers(2**31)))
+        x, y = self._ds()
+        x = torch.tensor(x, dtype=torch.float32)
+        y = torch.tensor(y, dtype=torch.long)
+        return x, y, torch.ones(y.shape)
+
+    def eval_batch(self, n_per_condition: int, seed: int = 0) -> TrialBatch:
+        return eval_trials(self.cfg, n_per_condition, seed=seed)
+
+    def run(self, model, batch: TrialBatch, silence=None, current=None, noise=True):
+        with torch.no_grad():
+            return model(batch.inputs, silence=silence, current=current, noise=noise)
+
+    def behavior(self, outputs, batch: TrialBatch) -> dict:
+        return behavior_summary(choices_from_outputs(outputs, batch), batch)
+
+    def condition_key(self, c: dict):
+        return (c["ground_truth"], c.get("coh"))
+
+
+def is_vagal(name: str) -> bool:
+    return name.startswith("VagalOpto")
+
+
+def task_config_from_dict(d: dict):
+    """TaskConfig for NeuroGym tasks, VagalTaskConfig for the interoception task."""
+    if is_vagal(d.get("name", "")):
+        from .vagal_task import VagalTaskConfig
+        return VagalTaskConfig(**d)
+    return TaskConfig(**d)
+
+
+def get_task(cfg):
+    if is_vagal(cfg.name):
+        from .vagal_task import VagalOptoTask
+        return VagalOptoTask(cfg)
+    return NeuroGymTask(cfg)

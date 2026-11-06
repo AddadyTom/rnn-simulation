@@ -31,6 +31,13 @@ class ModelConfig:
     tau: float = 100.0  # ms
     noise_std: float = 0.05  # recurrent noise, in units of x, per sqrt(step)
     dale: bool = True
+    # Optional areas (e.g. insula = 0, a downstream decision area = 1). Cross-area
+    # connections come only from E units: area a feeds area a + 1, and with `feedback`
+    # every later area also projects back. I units stay local.
+    area_of_unit: list | None = None   # one area id per unit; None = one area
+    input_areas: list | None = None    # per input, the areas it reaches; None = all
+    readout_area: int | None = None    # only this area's E units drive the outputs
+    feedback: bool = True
 
 
 class EIRNN(nn.Module):
@@ -49,13 +56,38 @@ class EIRNN(nn.Module):
         self.register_buffer("sign", sign.unsqueeze(0).expand(n, n).clone())
         self.register_buffer("no_self", 1.0 - torch.eye(n))
 
+        rec_mask, in_mask, out_mask = torch.ones(n, n), torch.ones(n, cfg.n_inputs), torch.ones(self.n_exc)
+        if cfg.area_of_unit is not None:
+            area = torch.tensor(cfg.area_of_unit)
+            same = area[:, None] == area[None, :]
+            fwd = area[:, None] == area[None, :] + 1           # post is in the next area
+            back = area[:, None] < area[None, :] if cfg.feedback else torch.zeros(n, n, dtype=torch.bool)
+            rec_mask = (same | ((fwd | back) & is_exc[None, :])).float()
+            if cfg.input_areas is not None:
+                for k, allowed in enumerate(cfg.input_areas):
+                    in_mask[:, k] = torch.isin(area, torch.tensor(allowed)).float()
+            if cfg.readout_area is not None:
+                out_mask = (area[: self.n_exc] == cfg.readout_area).float()
+        self.register_buffer("rec_mask", rec_mask, persistent=False)  # rebuilt from cfg
+        self.register_buffer("in_mask", in_mask, persistent=False)
+        self.register_buffer("out_mask", out_mask, persistent=False)
         # Balanced initialization: inhibitory weights scaled up so that the
         # expected E and I input to each unit roughly cancel.
         w = torch.rand(n, n) / n**0.5
         if cfg.dale:
             n_inh = n - self.n_exc
             if n_inh > 0:
-                w[:, self.n_exc :] *= self.n_exc / n_inh
+                if cfg.area_of_unit is None:
+                    w[:, self.n_exc :] *= self.n_exc / n_inh
+                else:
+                    # Long-range E inputs start weaker (x0.1) than local ones, then each
+                    # unit's I weights are scaled to balance its own E input, which the
+                    # areas make unequal (a small area has few I units for many E inputs).
+                    cross = rec_mask * (area[:, None] != area[None, :]).float()
+                    w = w * (1.0 - 0.9 * cross)
+                    e_mass = (w * rec_mask)[:, : self.n_exc].sum(1, keepdim=True)
+                    i_mass = (w * rec_mask)[:, self.n_exc :].sum(1, keepdim=True).clamp(min=1e-6)
+                    w[:, self.n_exc :] *= e_mass / i_mass
             w *= 0.5
         else:
             w = torch.randn(n, n) * (1.5 / n**0.5)
@@ -70,12 +102,12 @@ class EIRNN(nn.Module):
     @property
     def w_rec(self) -> torch.Tensor:
         if self.cfg.dale:
-            return torch.relu(self.w_raw) * self.sign * self.no_self
-        return self.w_raw * self.no_self
+            return torch.relu(self.w_raw) * self.sign * self.no_self * self.rec_mask
+        return self.w_raw * self.no_self * self.rec_mask
 
     @property
     def w_in(self) -> torch.Tensor:
-        return torch.relu(self.w_in_raw) if self.cfg.dale else self.w_in_raw
+        return (torch.relu(self.w_in_raw) if self.cfg.dale else self.w_in_raw) * self.in_mask
 
     def forward(
         self,
@@ -87,7 +119,7 @@ class EIRNN(nn.Module):
         """Run the network.
 
         u:        (T, B, n_inputs) inputs
-        silence:  (T, B, N) bool, True where a unit's rate is clamped to 0
+        silence:  (T, B, N) bool, True where a unit's rate is clamped to 0 and its state held at or below 0
         current:  (T, B, N) extra input current added to the units (optogenetic drive)
         Returns outputs (T, B, n_outputs) and rates (T, B, N).
         """
@@ -107,9 +139,14 @@ class EIRNN(nn.Module):
             x = (1 - self.alpha) * x + self.alpha * inp
             if noise and noise_scale > 0:
                 x = x + noise_scale * torch.randn_like(x)
+            if silence is not None:
+                # Hold silenced units down (like optogenetic hyperpolarisation): their
+                # state cannot climb above threshold, so they do not build up input
+                # while silenced and come back without a memory of it.
+                x = torch.where(silence[t], x.clamp(max=0.0), x)
             r = torch.relu(x)
             if silence is not None:
                 r = r.masked_fill(silence[t], 0.0)
             rates.append(r)
-            outs.append(r[:, : self.n_exc] @ self.w_out.T + self.b_out)
+            outs.append(r[:, : self.n_exc] @ (self.w_out * self.out_mask).T + self.b_out)
         return torch.stack(outs), torch.stack(rates)
