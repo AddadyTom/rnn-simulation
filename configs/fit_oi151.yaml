@@ -36,5 +36,5 @@ out_dir: runs
 # Calcium (plan step 4). Way A: signal: dff_deconv (OASIS spikes from the dF/F).
 # Way B: keep signal: dff_ready and set calcium_tau_ms (e.g. 1000) to slow the model's
 # rates with a calcium decay before comparing them with dF/F.
-calcium_tau_ms: 1000              # way B, the main option (it reached more of its ceiling than way A); 0 = off
+calcium_tau_ms: 1000              # way B, the main option: the units can fire fast and the filter adds the calcium lag (held-out R2 is about the same as with no filter, 0.291 vs 0.294); 0 = off
 learn_calcium_tau: false          # on fake data the decay was not recoverable (see docs), so fix it
