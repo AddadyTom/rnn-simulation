@@ -67,7 +67,10 @@ for seed in (0, 1, 2):
         ce = F.cross_entropy(out.reshape(-1, 2), y.reshape(-1), reduction="none")
         loss = (ce * w.reshape(-1)).sum() / w.sum() + RATE_L2 * rates.pow(2).mean() + 1e-5 * m.w_rec.pow(2).sum()
         if variant.startswith("anchor"):
-            light = x[on:off, :, 0].sum(0) > 0
+            # The light input has noise on every trial (clipped at 0), so a light trial is one
+            # whose mean input in the light window is well above that noise floor.
+            light = x[on:off, :, 0].mean(0) > 0.3
+            assert light.any() and (~light).any()
             with torch.no_grad():
                 _, r0 = ref(x)
             for grp in ([light, ~light] if variant == "anchor_all" else [light]):
