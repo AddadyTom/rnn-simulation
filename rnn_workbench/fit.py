@@ -74,6 +74,7 @@ class FitConfig:
     calcium_tau_ms: float = 0.0  # > 0: slow each fitted unit's rate with this calcium decay before comparing (way B)
     learn_calcium_tau: bool = True  # learn one decay per cell, starting at calcium_tau_ms
     out_dir: str = "runs"
+    n_fit_cells: int = 0  # > 0: constrain only this many recorded cells, a fixed random subset (nested across sizes); the rest are left out
     init_from: str = ""  # fit directory to start each seed from (same seed, same cells); noise_std comes from this config
 
 
@@ -413,6 +414,11 @@ def fit(cfg: FitConfig, log=print) -> Path:
     session = load_session(Path(cfg.session_dir), cfg.events_file, cfg.iscell_file, cfg.signal, cfg.fs,
                            cfg.smooth_frames)
     log(f"Loaded {session.traces.shape[0]} cells, {session.traces.shape[1]} frames, {len(session.events)} trials")
+    if 0 < cfg.n_fit_cells < session.traces.shape[0]:
+        import dataclasses
+        keep = np.sort(np.random.default_rng(12345).permutation(session.traces.shape[0])[: cfg.n_fit_cells])
+        session = dataclasses.replace(session, traces=session.traces[keep], cell_ids=session.cell_ids[keep])
+        log(f"Constraining {len(keep)} of the cells (n_fit_cells); the others are left out")
     root = Path(cfg.out_dir) / cfg.name
     root.mkdir(parents=True, exist_ok=True)
     # Same shape as train.py's config, so experiment.py can load the fitted networks.
