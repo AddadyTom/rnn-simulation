@@ -22,10 +22,11 @@ from rnn_workbench.data import load_session
 from rnn_workbench.train import load_model
 from rnn_workbench.vagal_task import VagalOptoTask
 
-run_dir = ROOT / "runs" / "fit_oi151"
+run_dir = ROOT / "runs" / (sys.argv[1] if len(sys.argv) > 1 else "fit_oi151")
 cfg = F.load_fit_config(json.load(open(run_dir / "train_config.json"))["fit"])
 cfg.session_dir = str(ROOT / cfg.session_dir)
 sess = load_session(Path(cfg.session_dir), cfg.events_file, cfg.iscell_file, cfg.signal, cfg.fs, cfg.smooth_frames)
+sess = F.select_cells(sess, cfg.n_fit_cells)  # the subset the run was fitted to (no-op for all cells)
 task = VagalOptoTask(cfg.task)
 torch.manual_seed(0)
 data = F.build_trials(sess, task, np.random.default_rng(0), False)
@@ -93,4 +94,4 @@ for sd in sorted(run_dir.glob("seed_*")):
     noisy = pred + resid[rng.integers(len(resid), size=len(resid))]
     res[f"model {sd.name} + cells' trial noise"] = analyse(clusters(noisy))
     print(sd.name, res[f"model {sd.name} + cells' trial noise"], flush=True)
-(ROOT / "runs" / "easy_e4.json").write_text(json.dumps(res, indent=1))
+(ROOT / "runs" / ("easy_e4.json" if run_dir.name == "fit_oi151" else f"easy_e4_{run_dir.name}.json")).write_text(json.dumps(res, indent=1))

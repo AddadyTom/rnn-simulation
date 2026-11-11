@@ -23,10 +23,13 @@ from rnn_workbench.data import load_session
 from rnn_workbench.train import load_model
 from rnn_workbench.vagal_task import VagalOptoTask, VagalTaskConfig, reward_window
 
-BEFORE, AFTER = ROOT / "runs/fit_oi151_noise15", ROOT / "runs/reversal_oi151"
+_args = [a for a in sys.argv[1:] if not a.startswith("-")]
+BEFORE, AFTER = (ROOT / "runs" / _args[0], ROOT / "runs" / _args[1]) if len(_args) >= 2 else (ROOT / "runs/fit_oi151_noise15", ROOT / "runs/reversal_oi151")
+OUT = _args[2] if len(_args) >= 3 else "easy_e7.json"
 cfg = F.load_fit_config(json.load(open(BEFORE / "train_config.json"))["fit"])
 cfg.session_dir = str(ROOT / cfg.session_dir)
 sess = load_session(Path(cfg.session_dir), cfg.events_file, cfg.iscell_file, cfg.signal, cfg.fs, cfg.smooth_frames)
+sess = F.select_cells(sess, cfg.n_fit_cells)  # the subset the run was fitted to (no-op for all cells)
 real_task = VagalOptoTask(cfg.task)
 data = F.build_trials(sess, real_task, np.random.default_rng(0), False)
 act = data["act"].numpy()
@@ -81,8 +84,8 @@ def run_model(m, seed, contingency, n=80):
 
 if __name__ == "__main__":
   res = {}
-  for s in (0, 1, 2):
+  for s in sorted(int(d.name.split("_")[1]) for d in AFTER.glob("seed_*")):
     res[f"seed {s}"] = {"before (light = no water)": run(BEFORE, s, "no_reward"),
                         "after (light = water)": run(AFTER, s, "reward")}
     print(s, res[f"seed {s}"], flush=True)
-  (ROOT / "runs" / "easy_e7.json").write_text(json.dumps(res, indent=1))
+  (ROOT / "runs" / OUT).write_text(json.dumps(res, indent=1))

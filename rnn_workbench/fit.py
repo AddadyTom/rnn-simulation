@@ -410,15 +410,23 @@ def evaluate_fit(forward, data, idx, groups) -> dict:
     return out
 
 
+def select_cells(session: SessionData, n: int) -> SessionData:
+    """The fixed random subset of `n` cells used when n_fit_cells > 0 (nested across sizes).
+    Returns the session unchanged when n is 0 or not smaller than the number of cells."""
+    import dataclasses
+    if not 0 < n < session.traces.shape[0]:
+        return session
+    keep = np.sort(np.random.default_rng(12345).permutation(session.traces.shape[0])[:n])
+    return dataclasses.replace(session, traces=session.traces[keep], cell_ids=session.cell_ids[keep])
+
+
 def fit(cfg: FitConfig, log=print) -> Path:
     session = load_session(Path(cfg.session_dir), cfg.events_file, cfg.iscell_file, cfg.signal, cfg.fs,
                            cfg.smooth_frames)
     log(f"Loaded {session.traces.shape[0]} cells, {session.traces.shape[1]} frames, {len(session.events)} trials")
     if 0 < cfg.n_fit_cells < session.traces.shape[0]:
-        import dataclasses
-        keep = np.sort(np.random.default_rng(12345).permutation(session.traces.shape[0])[: cfg.n_fit_cells])
-        session = dataclasses.replace(session, traces=session.traces[keep], cell_ids=session.cell_ids[keep])
-        log(f"Constraining {len(keep)} of the cells (n_fit_cells); the others are left out")
+        session = select_cells(session, cfg.n_fit_cells)
+        log(f"Constraining {cfg.n_fit_cells} of the cells (n_fit_cells); the others are left out")
     root = Path(cfg.out_dir) / cfg.name
     root.mkdir(parents=True, exist_ok=True)
     # Same shape as train.py's config, so experiment.py can load the fitted networks.
