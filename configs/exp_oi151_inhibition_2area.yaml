@@ -1,0 +1,57 @@
+# Step 8 on the two-area fit: every perturbation hits the insula (area 0) only; the
+# downstream decision area is left intact, like a drug or light confined to the insula.
+name: oi151_inhibition_2area
+model_dir: runs/fit_oi151_2area
+trials_per_condition: 40
+out_dir: experiments
+task_overrides:
+  reward_delay: 200
+metrics:
+- cr_rate
+- hit_rate
+- p_report_stim:0.5
+- p_report_stim:1.0
+- p_report_stim:2.0
+- p_report_stim:3.0
+- p_report_stim:5.0
+- p_report_stim:15.0
+perturbations:
+- name: opto_partial_E
+  kind: current
+  target:
+    population: E
+    fraction: 0.47
+    area: 0
+  window: inhibition
+  strength: -0.5
+- name: opto_partial_E_strong
+  kind: current
+  target:
+    population: E
+    fraction: 0.47
+    area: 0
+  window: inhibition
+  strength: -2.0
+- name: drug_like_all_units
+  kind: silence
+  target:
+    population: all
+    fraction: 0.9
+    area: 0
+  window: inhibition
+- name: silence_most_suppressed_E
+  kind: silence
+  target:
+    population: E
+    fraction: 0.2
+    select: most_suppressed
+    area: 0
+  window: inhibition
+- name: silence_most_excited_E
+  kind: silence
+  target:
+    population: E
+    fraction: 0.2
+    select: most_excited
+    area: 0
+  window: inhibition

@@ -1,0 +1,41 @@
+# Easy-task plan: fit_oi151 continued for 300 steps with 7.5 times more internal noise
+# (0.15), so that its memory of the light has to survive noise. Starts from runs/fit_oi151.
+#   python -m rnn_workbench convert-lab "/path/to/RNN Data" data/oi151
+name: fit_oi151_noise15
+session_dir: data/oi151
+events_file: events.csv
+signal: dff_ready                 # the lab's dF/F (576 curated neurons)
+target: psth                      # condition averages: hit, CR, FA, miss
+fs: 15.0
+smooth_frames: 1.0
+seeds: [0, 1, 2]
+task:
+  name: VagalOptoDetection
+  dt: 20
+  timing: {baseline: 1000, stimulus: 4000, delay: 0, odor: 2000, response: 2000, outcome: 1000}
+  contingency: no_reward
+  opsin_tau: 150
+  gain_cv: 0.0
+  input_noise: 0.1
+  response_weight: 5.0
+  odor_weight: 1.0
+  reward_ms: 1000                 # reward starts at each trial's valve frame (events.csv reward_frame)
+  reward_delay: 200               # valve about 0.2 s into the reward window; the lick choice is read from odor onset to then
+n_hidden_exc: 150
+n_inh: 0                          # 0 = 20% of the network
+recorded_inh_fraction: 0.0
+tau: 100
+noise_std: 0.15
+steps: 300
+batch_size: 16
+lr: 0.001
+behavior_weight: 0.1             # chosen by the step 6 sweep (0.02-0.3 similar, 1.0 worse)
+test_fraction: 0.2
+eval_every: 100
+out_dir: runs
+# Calcium (plan step 4). Way A: signal: dff_deconv (OASIS spikes from the dF/F).
+# Way B: keep signal: dff_ready and set calcium_tau_ms (e.g. 1000) to slow the model's
+# rates with a calcium decay before comparing them with dF/F.
+calcium_tau_ms: 1000              # way B, the main option: the units can fire fast and the filter adds the calcium lag (held-out R2 is about the same as with no filter, 0.291 vs 0.294); 0 = off
+learn_calcium_tau: false          # on fake data the decay was not recoverable (see docs), so fix it
+init_from: runs/fit_oi151

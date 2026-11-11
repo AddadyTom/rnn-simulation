@@ -1,0 +1,32 @@
+# Data-constrained fit of insula session SS38 (26 Aug 2024; folder stav22).
+# Needs events.csv in the session folder (format in rnn_workbench/data.py).
+name: fit_ss38
+session_dir: data/stav22          # copy or symlink the suite2p plane0 folder here
+events_file: events.csv
+iscell_file: iscell_final.npy     # 763 cells
+signal: spks                      # deconvolved; use "dff" for neuropil-corrected dF/F
+target: psth                      # fit condition averages (frequency x lick x reward); or single_trial
+fs: 15.0
+smooth_frames: 1.0
+include_inhibition_trials: false  # keep opto-inhibition trials as a held-out test
+seeds: [0, 1, 2]
+task:
+  name: VagalOptoDetection
+  dt: 20
+  timing: {baseline: 1000, stimulus: 4000, delay: 0, response: 1500, outcome: 1000}   # check against the Methods
+  contingency: no_reward
+  opsin_tau: 150
+  gain_cv: 0.0
+  input_noise: 0.1
+n_hidden_exc: 100
+n_inh: 0                          # 0 = 20% of the network
+recorded_inh_fraction: 0.0
+tau: 100
+noise_std: 0.02
+steps: 3000
+batch_size: 16
+lr: 0.001
+behavior_weight: 0.02          # keep small: the activity MSE is ~0.01-0.05
+test_fraction: 0.2
+eval_every: 100
+out_dir: runs

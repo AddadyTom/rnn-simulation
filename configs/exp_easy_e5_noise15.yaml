@@ -1,0 +1,22 @@
+# Easy-task plan, step 2, E5: partial stGtACR2 on the fitted one-area model (3 copies).
+# Paper: about 47% of neurons express stGtACR2, light from 1 s before the vagal light
+# until the odor, no change in CR or hit rate in the easy task (Fig 3k-l, ED Fig 4k).
+# Pass: CR and hit rates at 15 Hz each change by 10 percentage points or less.
+name: easy_e5_noise15
+model_dir: runs/fit_oi151_noise15
+trials_per_condition: 40
+out_dir: experiments
+task_overrides:
+  reward_delay: 200
+metrics: [cr_rate, hit_rate, "p_report_stim:15.0"]
+perturbations:
+  - name: opto_partial_E
+    kind: current
+    target: {population: E, fraction: 0.47}
+    window: inhibition
+    strength: -0.5
+  - name: opto_partial_E_strong
+    kind: current
+    target: {population: E, fraction: 0.47}
+    window: inhibition
+    strength: -2.0

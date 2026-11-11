@@ -4,10 +4,13 @@ A perturbation is described declaratively (usually from a YAML config):
 
     target:  which units
         population: "E" | "I" | "all"   pool to draw from
+        area:       0                   only units of this area (networks with areas)
         fraction:   0.3                 fraction of that pool (or)
         count:      20                  number of units (or)
         units:      [3, 17, 42]         explicit unit indices
-        select:     "random" | "top_choice"   how to pick within the pool
+        select:     "random" | "top_choice" | "most_suppressed" | "most_excited"
+                    how to pick within the pool (the last two rank units by their change
+                    in rate from baseline to stimulus on stimulation trials)
     kind:    "silence"  clamp rates to 0 in the window (acute, like optogenetic inhibition)
              "lesion"   clamp rates to 0 for the whole trial (permanent ablation)
              "current"  add `strength` to the units' input in the window (+ excite, - inhibit)
@@ -39,15 +42,23 @@ class Perturbation:
     strength: float = 0.0
 
 
-def _pool(model: EIRNN, population: str) -> np.ndarray:
+def _pool(model: EIRNN, population: str, area: int | None = None) -> np.ndarray:
     is_exc = model.is_exc.cpu().numpy()
     if population == "E":
-        return np.flatnonzero(is_exc)
-    if population == "I":
-        return np.flatnonzero(~is_exc)
-    if population == "all":
-        return np.arange(model.cfg.n_units)
-    raise ValueError(f"unknown population {population!r}")
+        keep = is_exc
+    elif population == "I":
+        keep = ~is_exc
+    elif population == "all":
+        keep = np.ones(model.cfg.n_units, dtype=bool)
+    else:
+        raise ValueError(f"unknown population {population!r}")
+    if area is not None:
+        if model.cfg.area_of_unit is None:
+            if area != 0:
+                raise ValueError(f"area {area} asked for, but the network has one area")
+        else:
+            keep = keep & (np.asarray(model.cfg.area_of_unit) == area)
+    return np.flatnonzero(keep)
 
 
 def _n_targets(target: dict, pool_size: int) -> int:
@@ -64,12 +75,22 @@ def choice_selectivity(rates: torch.Tensor, batch: TrialBatch) -> np.ndarray:
     return np.abs(r[gt == 1].mean(0) - r[gt == 0].mean(0))
 
 
+def stimulus_response(rates: torch.Tensor, batch: TrialBatch) -> np.ndarray:
+    """Mean rate during the stimulus minus mean rate during the baseline, on stimulation trials."""
+    s, e = batch.periods["stimulus"]
+    bs, be = batch.periods["baseline"]
+    gt = np.array([c["ground_truth"] for c in batch.conditions]) == 1
+    r = rates.cpu().numpy()[:, gt]
+    return r[s:e].mean((0, 1)) - r[bs:be].mean((0, 1))
+
+
 def resolve_targets(
-    model: EIRNN, target: dict, rng: np.random.Generator, selectivity: np.ndarray | None = None
+    model: EIRNN, target: dict, rng: np.random.Generator, selectivity: np.ndarray | None = None,
+    response: np.ndarray | None = None,
 ) -> np.ndarray:
     if "units" in target:
         return np.asarray(target["units"], dtype=int)
-    pool = _pool(model, target.get("population", "all"))
+    pool = _pool(model, target.get("population", "all"), target.get("area"))
     n = _n_targets(target, len(pool))
     select = target.get("select", "random")
     if select == "random":
@@ -78,12 +99,17 @@ def resolve_targets(
         if selectivity is None:
             raise ValueError("select='top_choice' needs choice selectivity")
         return np.sort(pool[np.argsort(selectivity[pool])[::-1][:n]])
+    if select in ("most_suppressed", "most_excited"):
+        if response is None:
+            raise ValueError(f"select={select!r} needs the units' stimulus responses")
+        order = np.argsort(response[pool])
+        return np.sort(pool[order[:n] if select == "most_suppressed" else order[::-1][:n]])
     raise ValueError(f"unknown select {select!r}")
 
 
 def control_targets(model: EIRNN, target: dict, n: int, rng: np.random.Generator) -> np.ndarray:
     """Size-matched random units from the same pool (the null for any targeted effect)."""
-    pool = _pool(model, target.get("population", "all"))
+    pool = _pool(model, target.get("population", "all"), target.get("area"))
     return np.sort(rng.choice(pool, size=min(n, len(pool)), replace=False))
 
 

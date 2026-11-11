@@ -1,0 +1,28 @@
+# Interoceptive detection, single frequency (Rafael et al. 2026, Fig 1l-n).
+# VagalOpto->NoReward: 4 s of 15 Hz vagal stimulation before the odor means "don't lick".
+name: vagal_single
+seeds: [0, 1, 2, 3, 4, 5, 6, 7]
+task:
+  name: VagalOptoDetection
+  dt: 20
+  timing: {baseline: 1000, stimulus: 4000, delay: 0, response: 1500, outcome: 1000}
+  contingency: no_reward
+  train_frequencies: [15.0]
+  eval_frequencies: [0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 15.0]
+  p_stim: 0.5
+  opsin_tau: 150        # ms
+  gain_cv: 0.3          # trial-to-trial light absorption
+  input_noise: 0.5
+model:
+  n_units: 100
+  frac_exc: 0.8
+  tau: 100
+  noise_std: 0.05
+  dale: true
+steps: 600
+batch_size: 32
+lr: 0.002
+rate_l2: 0.001
+weight_l2: 0.0001
+eval_every: 200
+out_dir: runs

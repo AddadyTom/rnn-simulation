@@ -1,0 +1,39 @@
+# Step 8 of the OI151 plan: virtual inhibition experiments on the network fitted to
+# OI151 (predictions: this session had no inhibition trials). Run the same file with
+# model_dir: runs/vagal_oi151 for the task-only networks.
+# The test probes 0.5-15 Hz, although the mouse and the fit only saw 15 Hz (Q2).
+name: oi151_inhibition_fitted
+model_dir: runs/fit_oi151
+trials_per_condition: 40
+out_dir: experiments
+task_overrides:
+  reward_delay: 200        # valve about 0.2 s after the reward window opens, as measured
+metrics: [cr_rate, hit_rate, "p_report_stim:0.5", "p_report_stim:1.0", "p_report_stim:2.0", "p_report_stim:3.0", "p_report_stim:5.0", "p_report_stim:15.0"]
+perturbations:
+  # stGtACR2 in about 47% of excitatory neurons, light from 1 s before the stimulus
+  # until the odor. Partial inhibition (a negative current), at two strengths.
+  - name: opto_partial_E
+    kind: current
+    target: {population: E, fraction: 0.47}
+    window: inhibition
+    strength: -0.5
+  - name: opto_partial_E_strong
+    kind: current
+    target: {population: E, fraction: 0.47}
+    window: inhibition
+    strength: -2.0
+  # GABA agonists: nearly every unit, E and I, silenced in the same window.
+  - name: drug_like_all_units
+    kind: silence
+    target: {population: all, fraction: 0.9}
+    window: inhibition
+  # The 20% of E units whose rate drops most during stimulation, and for comparison
+  # the 20% whose rate rises most. Each is compared with random E units.
+  - name: silence_most_suppressed_E
+    kind: silence
+    target: {population: E, fraction: 0.2, select: most_suppressed}
+    window: inhibition
+  - name: silence_most_excited_E
+    kind: silence
+    target: {population: E, fraction: 0.2, select: most_excited}
+    window: inhibition

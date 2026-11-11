@@ -1,0 +1,325 @@
+import json
+
+import numpy as np
+import pytest
+import torch
+
+from rnn_workbench import analysis
+from rnn_workbench.data import load_session, trial_tensor, write_synthetic_session
+from rnn_workbench.experiment import run_experiment
+from rnn_workbench.fit import FitConfig, fit
+from rnn_workbench.model import ModelConfig
+from rnn_workbench.train import TrainConfig, load_model, train
+from rnn_workbench.vagal_task import VagalOptoTask, VagalTaskConfig, behavior_summary, drive_trace, fit_threshold
+
+FAST = dict(timing={"baseline": 200, "stimulus": 800, "delay": 0, "response": 200, "outcome": 200})
+
+
+def test_drive_scales_with_frequency_and_decays():
+    cfg = VagalTaskConfig()
+    task = VagalOptoTask(cfg)
+    s, e = task.periods["stimulus"]
+    d15, d3, d0 = (drive_trace(f, cfg) for f in (15, 3, 0))
+    assert abs(d15[s + 25:e].mean() - 1.0) < 0.05
+    assert abs(d3[s + 25:e].mean() - 0.2) < 0.03
+    assert d0.max() == 0 and d15[:s].max() == 0
+    assert 0 < d15[e + 5] < d15[e - 1]  # kernel tail after stimulus offset
+
+
+@pytest.mark.parametrize("contingency", ["no_reward", "reward"])
+def test_targets_follow_contingency(contingency):
+    task = VagalOptoTask(VagalTaskConfig(contingency=contingency, input_noise=0, gain_cv=0))
+    x, y, w, conds = task.build([0.0, 15.0], np.random.default_rng(0))
+    rs, re = task.periods["response"]
+    os_, oe = task.periods["outcome"]
+    go = [c["go"] for c in conds]
+    assert go == ([True, False] if contingency == "no_reward" else [False, True])
+    for b in range(2):
+        assert (y[rs:re, b] == int(go[b])).all() and y[:rs, b].sum() == 0
+        assert x[os_:oe, b, 2].max() == float(go[b])  # reward only on go trials
+    assert (x[rs:re, :, 1] == 1).all() and x[:rs, :, 1].sum() == 0
+    assert (w[rs:re] > 1).all()
+
+
+def test_inhibition_window_is_1s_before_stimulus_to_odor():
+    task = VagalOptoTask(VagalTaskConfig())
+    assert task.periods["inhibition"] == (0, task.periods["response"][0])
+    assert task.periods["stimulus"][0] - task.periods["inhibition"][0] == 1000 / 20
+
+
+def test_behavior_summary_no_reward():
+    conds = [{"freq": f, "go": f == 0} for f in [0, 0, 0, 0, 2, 2, 15, 15]]
+    licked = np.array([1, 1, 1, 0, 1, 0, 0, 0])
+    b = behavior_summary(licked, conds, "no_reward")
+    assert b["hit_rate"] == 0.75 and b["cr_rate"] == 0.75
+    assert b["p_report_stim"][2.0] == 0.5 and b["p_report_stim"][15.0] == 1.0
+    assert b["accuracy"] == pytest.approx(6 / 8)
+    assert b["dprime"][15.0] > b["dprime"][2.0]
+
+
+def test_fit_threshold():
+    lv = [0, 0.5, 1, 2, 3, 5, 15]
+    p = [0.0, 0.02, 0.1, 0.5, 0.8, 0.97, 1.0]
+    assert 1.6 < fit_threshold(lv, p) < 2.5
+
+
+def small_vagal_cfg(tmp_path, **kw):
+    task = VagalTaskConfig(**FAST, train_frequencies=[15.0], eval_frequencies=[3.0, 15.0])
+    return TrainConfig(name="v", seeds=[0, 1], task=task, model=ModelConfig(n_units=30), steps=4,
+                       batch_size=4, eval_every=4, eval_trials=2, out_dir=str(tmp_path), **kw)
+
+
+def test_train_vagal_keeps_dale_and_init_from(tmp_path):
+    root = train(small_vagal_cfg(tmp_path), log=lambda *_: None)
+    m = load_model(root / "seed_0")
+    w = m.w_rec.detach()
+    assert (w[:, m.is_exc] >= 0).all() and (w[:, ~m.is_exc] <= 0).all()
+    final = json.loads((root / "seed_0" / "metrics.json").read_text())["final"]
+    assert {"accuracy", "p_report_stim", "psychometric"} <= set(final)
+    cfg2 = small_vagal_cfg(tmp_path, init_from=str(root), save_every=2)
+    cfg2.name, cfg2.task.contingency = "v_rev", "reward"
+    root2 = train(cfg2, log=lambda *_: None)
+    assert (root2 / "seed_0" / "checkpoints" / "step_2.pt").exists()
+
+
+def test_experiment_on_vagal_ensemble(tmp_path):
+    root = train(small_vagal_cfg(tmp_path), log=lambda *_: None)
+    cfg = {"name": "inh", "model_dir": str(root), "trials_per_condition": 3, "control_draws": 2,
+           "out_dir": str(tmp_path / "exp"), "metrics": ["cr_rate", "hit_rate", "p_report_stim:3.0"],
+           "perturbations": [{"name": "opto", "kind": "current", "target": {"population": "E", "fraction": 0.47},
+                              "window": "inhibition", "strength": -0.5}]}
+    out = run_experiment(cfg, log=lambda *_: None)
+    res = json.loads((out / "results.json").read_text())
+    assert set(res["summary"]["opto"]["metrics"]) == {"cr_rate", "hit_rate", "p_report_stim:3.0"}
+    from rnn_workbench.report import build_report
+    assert build_report(out).exists()
+
+
+def test_closed_loop_reward_matches_licks():
+    from rnn_workbench.model import EIRNN
+    torch.manual_seed(0)
+    task = VagalOptoTask(VagalTaskConfig(**FAST, eval_frequencies=[15.0]))
+    model = EIRNN(ModelConfig(n_units=20, n_inputs=3, n_outputs=2))
+    with torch.no_grad():
+        model.b_out[1] = 0.3  # lick on most trials so both cases occur
+    batch = task.eval_batch(6, seed=0)
+    seen = []
+    orig = model.forward
+    model.forward = lambda u, **kw: (seen.append(u), orig(u, **kw))[1]
+    out, _ = task.run(model, batch)
+    licked = task.choices(out, batch)
+    go = np.array([c["go"] for c in batch.conditions])
+    os_, oe = batch.periods["outcome"]
+    got_reward = seen[-1][os_:oe, :, 2].amax(0).numpy() > 0
+    assert (got_reward == (licked.astype(bool) & go)).all()
+
+
+# -- data and fitting ---------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def session_dir(tmp_path_factory):
+    d = tmp_path_factory.mktemp("synth")
+    write_synthetic_session(d, n_rois=20, n_trials=40, seed=0)
+    return d
+
+
+def test_load_session_filters_cells_and_aligns_trials(session_dir):
+    s = load_session(session_dir)
+    assert s.traces.shape[0] == 20 and len(s.cell_ids) == 20  # 5 non-cell ROIs dropped
+    assert s.traces.min() >= 0
+    act, ok = trial_tensor(s, 1000, 7500)
+    assert act.shape == (40, int(7.5 * 15), 20) and ok.all()
+
+
+def test_fit_runs_and_is_perturbable(session_dir, tmp_path):
+    cfg = FitConfig(name="f", session_dir=str(session_dir), steps=3, eval_every=3, batch_size=4,
+                    n_hidden_exc=5, out_dir=str(tmp_path))
+    root = fit(cfg, log=lambda *_: None)
+    r = json.loads((root / "seed_0" / "fit.json").read_text())
+    assert r["n_recorded"] == 20 and len(set(r["unit_of_cell"])) == 20
+    m = load_model(root / "seed_0")
+    assert m.is_exc[r["unit_of_cell"]].all()
+    exp = {"name": "e", "model_dir": str(root), "trials_per_condition": 2, "control_draws": 1,
+           "out_dir": str(tmp_path / "exp"),
+           "perturbations": [{"name": "s", "kind": "silence", "target": {"population": "E", "fraction": 0.5},
+                              "window": "stimulus"}]}
+    run_experiment(exp, log=lambda *_: None)
+
+
+# -- analyses -------------------------------------------------------------------------------
+
+def test_auroc():
+    assert analysis.auroc([2, 3], [0, 1]) == 1.0
+    assert analysis.auroc([0, 1], [2, 3]) == 0.0
+    assert analysis.auroc([1, 1], [1, 1]) == 0.5
+
+
+def test_event_responsive_finds_excited_and_suppressed_units():
+    rng = np.random.default_rng(0)
+    n = 60
+    base = rng.normal(size=(n, 4))
+    ev = rng.normal(size=(n, 4))
+    ev[:, 0] += 1.5   # excited
+    ev[:, 1] -= 1.5   # suppressed
+    ctrl = rng.normal(size=(n, 4))
+    ctrl[:, 0] += 1.5  # unit 0 also rises without the event, so the control removes it
+    r = analysis.event_responsive(ev, base, n_perm=200)
+    assert list(r["label"][:2]) == [1, -1]
+    r = analysis.event_responsive(ev, base, control=ctrl, n_perm=200)
+    assert r["label"][0] == 0 and r["label"][1] == -1
+
+
+def test_choice_probability_paper_finds_planted_unit():
+    rng = np.random.default_rng(0)
+    cr, fa = rng.normal(size=(80, 50)), rng.normal(size=(10, 50))
+    cr[:, 0] += 2.0
+    r = analysis.choice_probability_paper(cr, fa, n_boot=100, null_size="matched")
+    assert r["cp"][0] > r["threshold"][1]
+    assert r["fraction_significant"] < 0.3
+
+
+def test_choice_probability_finds_planted_unit():
+    rng = np.random.default_rng(0)
+    n = 200
+    det = rng.random(n) < 0.5
+    freqs = rng.choice([1.0, 2.0], n)
+    resp = rng.normal(size=(n, 5))
+    resp[:, 0] += 1.0 * det
+    cp = analysis.choice_probability(resp, det, strata=freqs, n_perm=200)
+    assert cp["cp"][0] > 0.7 and cp["p"][0] < 0.01 and (cp["p"][1:] > 0.01).mean() >= 0.75
+
+
+def test_tuning_classes_separates_sigmoid_and_gaussian():
+    rng = np.random.default_rng(0)
+    levels = np.array([0, 0.5, 1, 2, 3, 5, 8, 15.0])
+    freqs = np.repeat(levels, 20)
+    lf = np.log10(np.where(freqs > 0, freqs, 0.25))
+    sig = 1 / (1 + np.exp(-6 * (lf - np.log10(3))))
+    gau = np.exp(-0.5 * ((lf - np.log10(1.5)) / 0.2) ** 2)
+    resp = np.stack([sig, gau, np.zeros_like(sig)], 1) + 0.1 * rng.normal(size=(len(freqs), 3))
+    tc = analysis.tuning_classes(resp, freqs, n_shuffle=30)
+    assert [t["kind"] for t in tc] == ["sigmoid", "gaussian", "none"]
+    assert 2 < tc[0]["threshold_hz"] < 4.5 and 1 < tc[1]["peak_hz"] < 2.2
+
+
+def test_checked_tuning_labels_suppressed_weak_and_rising_units():
+    rng = np.random.default_rng(0)
+    levels = np.array([0, 0.5, 1, 2, 3, 5, 8, 15.0])
+    freqs = np.repeat(levels, 20)
+    lf = np.log10(np.where(freqs > 0, freqs, 0.25))
+    sig = 1 / (1 + np.exp(-6 * (lf - np.log10(3))))
+    gau = np.exp(-0.5 * ((lf - np.log10(1.5)) / 0.2) ** 2)
+    sup = -gau  # a suppressed unit: a negative Gaussian would fit it
+    weak = 0.02 * sig
+    rising = (freqs / 15.0) ** 3  # still steepening at the top frequency
+    resp = np.stack([sig, gau, sup, weak, rising], 1) + 0.01 * rng.normal(size=(len(freqs), 5))
+    kinds = [t["kind"] for t in analysis.tuning_classes_checked(resp, freqs, n_shuffle=20)]
+    assert kinds == ["sigmoid", "gaussian", "suppressed", "weak", "rising"]
+
+
+def test_decoding_and_neurometric():
+    rng = np.random.default_rng(0)
+    freqs = np.repeat([0.0, 1.0, 15.0], 40)
+    resp = rng.normal(size=(120, 10))
+    resp[freqs == 15.0, :3] += 3
+    nm = analysis.neurometric(resp, freqs)
+    assert nm[15.0] > 0.9 and 0.3 < nm[1.0] < 0.75
+
+
+def test_mock_events_layout(tmp_path):
+    from rnn_workbench.data import load_events, write_mock_events
+    rows = write_mock_events(tmp_path / "events.csv", frames_per_run=(2000, 2000), inhibition_fraction=0.2)
+    ev = load_events(tmp_path / "events.csv")
+    assert len(ev) == len(rows) > 10
+    for e in ev:
+        assert e["odor_onset_frame"] - e["stim_onset_frame"] == 60  # 4 s at 15 Hz
+        lo, hi = e["stim_onset_frame"] - 15, e["stim_onset_frame"] + 97  # 1 s before to 6.5 s after
+        assert lo >= 0 and hi < 4000 and not (lo < 2000 <= hi)  # never crosses the run boundary
+        assert e["rewarded"] == int(e["licked"] and e["freq_hz"] == 0)
+    assert {"inhibition"} <= set(ev[0])
+
+
+# -- the lab's rig timing (OI151) and export format ---------------------------------------
+
+RIG = dict(timing={"baseline": 1000, "stimulus": 4000, "delay": 0, "odor": 2000, "response": 2000, "outcome": 1000},
+           reward_delay=200, reward_ms=1000, input_noise=0, gain_cv=0)
+
+
+def test_rig_timing_odor_lick_and_reward_windows():
+    task = VagalOptoTask(VagalTaskConfig(**RIG))
+    per = task.periods
+    assert per["odor"] == (250, 350) and per["response"] == (350, 450) and task.T == 500
+    assert per["inhibition"] == (0, 250)  # 1 s before the stimulus to odor onset
+    x, y, w, conds = task.build([0.0, 15.0], np.random.default_rng(0))
+    assert (x[250:350, :, 1] == 1).all() and x[350:, :, 1].sum() == 0  # odor only in the odor period
+    assert (y[250:450, 0] == 1).all() and y[:250, 0].sum() == 0 and y[:, 1].sum() == 0
+    assert x[360:410, 0, 2].min() == 1 and x[:360, 0, 2].max() == 0 and x[410:, 0, 2].max() == 0
+    assert x[:, 1, 2].max() == 0  # no reward on the no-go trial
+    assert (w[350:450] == 5).all() and (w[250:350] == 1).all()
+
+
+def test_default_timing_unchanged():
+    task = VagalOptoTask(VagalTaskConfig())
+    assert task.periods["odor"][0] == task.periods["odor"][1] == task.periods["response"][0]
+    x, y, _, _ = task.build([0.0], np.random.default_rng(0))
+    rs, re = task.periods["response"]
+    assert (x[rs:re, 0, 1] == 1).all() and (y[rs:re, 0] == 1).all() and y[:rs, 0].sum() == 0
+
+
+def test_convert_lab_session_and_fit(tmp_path):
+    from rnn_workbench.data import load_events
+    from rnn_workbench.fit import build_trials
+    from rnn_workbench.lab_format import convert_session, write_fake_lab_session
+    src, out = tmp_path / "lab", tmp_path / "sess"
+    write_fake_lab_session(src)
+    info = convert_session(src, out, dff_file="dff.npy")
+    assert info["problems"] == [] and info["outcomes"] == {"hit": 6, "miss": 0, "cr": 5, "fa": 1}
+    ev = load_events(out / "events.csv")
+    hit = next(e for e in ev if e["outcome"] == "hit")
+    assert hit["licked"] == hit["rewarded"] == 1 and hit["reward_frame"] - hit["stim_onset_frame"] == 108 - 15
+    assert all(e["freq_hz"] == 15.0 for e in ev if e["outcome"] in ("cr", "fa"))
+    s = load_session(out, signal="dff_ready")
+    assert s.traces.shape == (12, 4000)
+    task = VagalOptoTask(VagalTaskConfig(**RIG))
+    d = build_trials(s, task, np.random.default_rng(0), include_inhibition=False)
+    b = next(i for i, e in enumerate(d["events"]) if e["outcome"] == "hit")
+    on = np.flatnonzero(d["x"][:, b, 2].numpy() > 0)
+    assert on[0] == 50 + round(93 / 15 * 1000 / 20) and len(on) == 50  # reward at the valve frame, 1 s long
+    fa = next(i for i, e in enumerate(d["events"]) if e["outcome"] == "fa")
+    assert d["x"][:, fa, 2].max() == 0
+    cfg = FitConfig(name="lab", session_dir=str(out), signal="dff_ready", task=VagalTaskConfig(**RIG), steps=2,
+                    eval_every=2, n_hidden_exc=4, out_dir=str(tmp_path / "runs"))
+    root = fit(cfg, log=lambda *_: None)
+    assert (root / "seed_0" / "fit.json").exists()
+
+
+def test_calcium_readout_is_exponential_smoothing():
+    from rnn_workbench.fit import Readout
+    ro = Readout(2, calcium_tau_ms=200.0, dt=20.0)
+    r = torch.zeros(60, 1, 2)
+    r[10] = 1.0
+    out = ro(r, torch.arange(60)).detach()
+    a = np.exp(-20 / 200)
+    assert torch.allclose(out[10:20, 0, 0], torch.tensor((1 - a) * a ** np.arange(10), dtype=torch.float32), atol=1e-6)
+    assert out[:10].abs().max() == 0
+
+
+def test_oasis_numpy_recovers_spikes():
+    from rnn_workbench.deconv import oasis_ar1
+    rng = np.random.default_rng(0)
+    g = np.exp(-1 / 15)
+    s = (rng.random(2000) < 0.03) * 1.0
+    c = np.zeros_like(s)
+    for t in range(len(s)):
+        c[t] = (g * c[t - 1] if t else 0) + s[t]
+    _, est = oasis_ar1(c + 0.1 * rng.standard_normal(len(s)), g, lam=0.3)
+    k = np.ones(5)
+    assert np.corrcoef(np.convolve(est, k, "same"), np.convolve(s, k, "same"))[0, 1] > 0.9
+
+
+def test_fit_with_calcium_decay(session_dir, tmp_path):
+    cfg = FitConfig(name="ca", session_dir=str(session_dir), steps=2, eval_every=2, n_hidden_exc=4,
+                    calcium_tau_ms=500.0, out_dir=str(tmp_path))
+    root = fit(cfg, log=lambda *_: None)
+    r = json.loads((root / "seed_0" / "fit.json").read_text())
+    assert 300 < r["calcium_tau_ms"]["median"] < 800
